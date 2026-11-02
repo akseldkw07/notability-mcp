@@ -174,12 +174,18 @@ def read_ops(buf: bytes, ops_field: int) -> list[tuple[Id, int, _Table]]:
 
 
 def decode_bundle(buf: bytes) -> Note:
-    """Decode a NoteBundle as returned by the collab API or cached by the desktop app."""
+    """Decode a NoteBundle as returned by the collab API."""
     root = _Table(buf, struct.unpack_from("<I", buf, 0)[0])
     lo, hi = root._unpack(0, _UUID) or (0, 0)
     h = f"{(hi << 64) | lo:032x}"
     note_id = f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
     return build_note(note_id, read_ops(buf, 6))
+
+
+def decode_local(note_id: str, buf: bytes) -> Note:
+    """Decode the Mac app's per-note change log (`notes/<UUID>` in its container): the same
+    ops as a NoteBundle, but in root field 0, and without the note id."""
+    return build_note(note_id, read_ops(buf, 0))
 
 
 def linearize(nodes: list[tuple[SeqId, SeqId | None]]) -> list[SeqId]:
@@ -368,5 +374,12 @@ def _page(number: int, pid: SeqId, bg: dict) -> Page:
         digest, offset, crop_boxes = pdf
         page.pdf = PdfPage(digest, offset + pid[2])
         if pid[2] < len(crop_boxes):
-            page.width, page.height = crop_boxes[pid[2]]
+            width, height = crop_boxes[pid[2]]
+            if "size" in bg and width > 0:
+                # ink is placed in the background's space, the PDF page scaled to the
+                # background's width (crop boxes are in PDF points): about a quarter of inked
+                # PDF pages in a real library drew their ink off the page with the crop box
+                page.height = height * page.width / width
+            else:
+                page.width, page.height = width, height
     return page

@@ -1,5 +1,6 @@
 """The local index: note metadata, raw bundles and searchable page text in one SQLite file."""
 
+import json
 import os
 import re
 import sqlite3
@@ -34,6 +35,23 @@ CREATE TABLE IF NOT EXISTS notes (
 CREATE TABLE IF NOT EXISTS assets (sha512 TEXT PRIMARY KEY, data BLOB NOT NULL);
 -- note_id is UNINDEXED (FTS5 can't index it), so reading one note's pages scans the table:
 -- about 2 ms for 6,000 pages.
+-- Timed transcripts of a note's recordings (local source: Notability's own transcription).
+CREATE TABLE IF NOT EXISTS transcripts (
+    note_id TEXT NOT NULL,
+    asset TEXT NOT NULL,         -- the audio attachment's SHA-512
+    language TEXT NOT NULL,
+    segments TEXT NOT NULL       -- JSON [[start, end, text], ...], seconds
+);
+-- Files attached to notes (local source): PDFs, images, audio. Only PDFs are copied into
+-- `assets`; the rest are read from the app's container when asked for.
+CREATE TABLE IF NOT EXISTS attachments (
+    note_id TEXT NOT NULL,
+    sha512 TEXT NOT NULL,
+    kind TEXT NOT NULL,          -- pdf, image, audio, video or other
+    mime TEXT NOT NULL,
+    size INTEGER,                -- NULL when the app hasn't downloaded the file
+    available INTEGER NOT NULL   -- 1 if the file is in the app's container
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS page_text USING fts5(
     title, text,
     note_id UNINDEXED, page UNINDEXED, source UNINDEXED, confidence UNINDEXED,
@@ -42,7 +60,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS page_text USING fts5(
 """
 
 
-type Source = Literal["handwriting", "typed", "pdf"]
+type Source = Literal["handwriting", "typed", "pdf", "image", "recording"]
 
 
 @dataclass
@@ -64,10 +82,26 @@ class NoteMeta:
 
 @dataclass
 class PageText:
-    page: int  # 1-based; 0 for note-level typed text
+    page: int  # 1-based; 0 for note-level text (typed, image OCR, recordings)
     source: Source
     text: str
     confidence: float | None = None
+
+
+@dataclass
+class Transcript:
+    asset: str  # the audio attachment's SHA-512
+    language: str
+    segments: list[tuple[float, float, str]]  # (start, end, text), seconds from the start
+
+
+@dataclass
+class Attachment:
+    sha512: str
+    kind: str  # pdf, image, audio, video or other
+    mime: str
+    size: int | None
+    available: bool
 
 
 @dataclass
@@ -125,6 +159,7 @@ def save_library(con: sqlite3.Connection, folders: list[Folder], notes: list[Not
         marks = ",".join("?" * len(live))
         con.execute(f"DELETE FROM notes WHERE id NOT IN ({marks})", live)
         con.execute(f"DELETE FROM page_text WHERE note_id NOT IN ({marks})", live)
+        con.execute(f"DELETE FROM transcripts WHERE note_id NOT IN ({marks})", live)
         con.execute(
             "INSERT OR REPLACE INTO meta VALUES ('synced_at', ?)",
             (datetime.now(UTC).isoformat(timespec="seconds"),),
@@ -140,6 +175,11 @@ def require_index_version(con: sqlite3.Connection, version: str) -> None:
         con.execute("INSERT OR REPLACE INTO meta VALUES ('index_version', ?)", (version,))
 
 
+def mark_stale(con: sqlite3.Connection, note_ids: list[str]) -> None:
+    with con:
+        con.executemany("UPDATE notes SET indexed_at = NULL WHERE id = ?", [(i,) for i in note_ids])
+
+
 def stale_notes(con: sqlite3.Connection) -> list[str]:
     """Notes whose content changed since they were last indexed, newest first."""
     rows = con.execute(
@@ -149,9 +189,19 @@ def stale_notes(con: sqlite3.Connection) -> list[str]:
 
 
 def save_note(
-    con: sqlite3.Connection, note_id: str, bundle: bytes, page_count: int, texts: list[PageText]
+    con: sqlite3.Connection,
+    note_id: str,
+    bundle: bytes,
+    page_count: int,
+    texts: list[PageText],
+    transcripts: list[Transcript] | None = None,
 ) -> None:
     with con:
+        con.execute("DELETE FROM transcripts WHERE note_id = ?", (note_id,))
+        con.executemany(
+            "INSERT INTO transcripts VALUES (?, ?, ?, ?)",
+            [(note_id, t.asset, t.language, json.dumps(t.segments)) for t in transcripts or []],
+        )
         (title,) = con.execute("SELECT title FROM notes WHERE id = ?", (note_id,)).fetchone()
         con.execute(
             "UPDATE notes SET bundle = ?, page_count = ?, indexed_at = modified_at WHERE id = ?",
@@ -201,7 +251,13 @@ def match_score(words: list[str], text: str) -> float:
 
 
 def search(
-    con: sqlite3.Connection, query: str, *, limit: int = 10, offset: int = 0
+    con: sqlite3.Connection,
+    query: str,
+    *,
+    limit: int = 10,
+    offset: int = 0,
+    note_ids: set[str] | None = None,
+    sources: set[str] | None = None,
 ) -> tuple[list[Hit], bool]:
     """Best-matching pages and whether more results exist past this page.
 
@@ -209,10 +265,15 @@ def search(
     are re-ranked by match_score and pages below WEAK_MATCH are dropped.
     """
     words = _words(query)
+    where, args = "page_text MATCH ?", [fuzzy_query(query)]
+    for column, values in (("note_id", note_ids), ("source", sources)):
+        if values is not None:
+            where += f" AND {column} IN ({','.join('?' * len(values))})"
+            args += sorted(values)
     rows = con.execute(
         "SELECT note_id, title, page, source, text, snippet(page_text, 1, '«', '»', '…', 48)"
-        " FROM page_text WHERE page_text MATCH ? ORDER BY bm25(page_text, 2.0, 1.0) LIMIT ?",
-        (fuzzy_query(query), CANDIDATES),
+        f" FROM page_text WHERE {where} ORDER BY bm25(page_text, 2.0, 1.0) LIMIT ?",
+        (*args, CANDIDATES),
     ).fetchall()
     scored = [
         Hit(n, t, p, s, snip, match_score(words, f"{t}\n{text}")) for n, t, p, s, text, snip in rows
@@ -234,6 +295,11 @@ class NoteRow:
 def get_meta(con: sqlite3.Connection, key: str) -> str | None:
     row = con.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
     return row[0] if row else None
+
+
+def set_meta(con: sqlite3.Connection, key: str, value: str) -> None:
+    with con:
+        con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, value))
 
 
 def device_id(con: sqlite3.Connection) -> str:
@@ -285,6 +351,40 @@ def note_pages(con: sqlite3.Connection, note_id: str) -> list[PageText]:
 def note_bundle(con: sqlite3.Connection, note_id: str) -> bytes | None:
     row = con.execute("SELECT bundle FROM notes WHERE id = ?", (note_id,)).fetchone()
     return row[0] if row else None
+
+
+def note_transcripts(con: sqlite3.Connection, note_id: str) -> list[Transcript]:
+    rows = con.execute(
+        "SELECT asset, language, segments FROM transcripts WHERE note_id = ? ORDER BY rowid",
+        (note_id,),
+    )
+    return [
+        Transcript(a, lang, [(start, end, text) for start, end, text in json.loads(segs)])
+        for a, lang, segs in rows
+    ]
+
+
+def save_attachments(con: sqlite3.Connection, rows: dict[str, list[Attachment]]) -> None:
+    """Replace every note's attachment list."""
+    with con:
+        con.execute("DELETE FROM attachments")
+        con.executemany(
+            "INSERT INTO attachments VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (note_id, a.sha512, a.kind, a.mime, a.size, int(a.available))
+                for note_id, items in rows.items()
+                for a in items
+            ],
+        )
+
+
+def note_attachments(con: sqlite3.Connection, note_id: str) -> list[Attachment]:
+    rows = con.execute(
+        "SELECT sha512, kind, mime, size, available FROM attachments WHERE note_id = ?"
+        " ORDER BY rowid",
+        (note_id,),
+    )
+    return [Attachment(sha, k, m, size, bool(av)) for sha, k, m, size, av in rows]
 
 
 def asset(con: sqlite3.Connection, sha512: str) -> bytes | None:

@@ -40,10 +40,17 @@ requires = ["uv_build>=0.13,<0.14"]
 build-backend = "uv_build"
 
 [dependency-groups]
-dev = ["anyio>=4", "pyright>=1.1.400", "pytest>=9", "ruff>=0.16"]
+dev = [
+    "anyio>=4",
+    "flatbuffers>=25.12.19",
+    "pyright>=1.1.400",
+    "pytest>=9",
+    "ruff>=0.16",
+]
 
 [tool.ruff]
 line-length = 100
+extend-exclude = ["src/notability_mcp/untrusted.py"]  # vendored verbatim from mcp-utils
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]

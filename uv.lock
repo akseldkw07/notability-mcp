@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -582,6 +582,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "anyio" },
+    { name = "flatbuffers" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "ruff" },
@@ -602,6 +603,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "anyio", specifier = ">=4" },
+    { name = "flatbuffers", specifier = ">=25.12.19" },
     { name = "pyright", specifier = ">=1.1.400" },
     { name = "pytest", specifier = ">=9" },
     { name = "ruff", specifier = ">=0.16" },

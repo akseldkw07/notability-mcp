@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent: syncs the index from the Notability Mac app (the local source) every 15 minutes,
+  using this checkout's venv.
+    cp scripts/com.akseldkw.notability-mcp-sync.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.akseldkw.notability-mcp-sync.plist
+  Reading the Notability app's data needs Full Disk Access for the Python the venv runs: grant it
+  to the file `realpath .venv/bin/python` prints (it changes when uv upgrades Python).
+  A sync with nothing changed takes under a second; the first one takes a minute or two.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.akseldkw.notability-mcp-sync</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/Akseldkw/coding/mcp/notability-mcp-py/.venv/bin/notability-mcp</string>
+        <string>sync</string>
+        <string>--source</string>
+        <string>local</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>900</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- background priority: it's OCR and SQLite, nothing interactive -->
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>LowPriorityIO</key>
+    <true/>
+    <!-- 077: the index holds the text of your notes -->
+    <key>Umask</key>
+    <integer>63</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/Akseldkw/Library/Logs/notability-mcp/sync.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/Akseldkw/Library/Logs/notability-mcp/sync.log</string>
+</dict>
+</plist>

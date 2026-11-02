@@ -20,6 +20,16 @@ def page_texts(data: bytes) -> list[str]:
             doc.close()
 
 
+def page_sizes(data: bytes) -> list[tuple[float, float]]:
+    """Every page's size in points, in order."""
+    with _lock:
+        doc = pdfium.PdfDocument(data)
+        try:
+            return [tuple(page.get_size()) for page in doc]  # type: ignore[misc]
+        finally:
+            doc.close()
+
+
 def render(data: bytes, index: int, size: tuple[int, int]) -> Image.Image | None:
     """Page `index` (0-based) drawn at `size` pixels; None if the PDF has no such page."""
     with _lock:
