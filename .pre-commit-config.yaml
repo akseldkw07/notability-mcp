@@ -10,3 +10,13 @@ repos:
     hooks:
       - id: conventional-pre-commit
         stages: [commit-msg]
+  # fork only: `pre-commit install --hook-type post-merge` deploys main to Claude Desktop
+  - repo: local
+    hooks:
+      - id: deploy-desktop
+        name: Deploy to Claude Desktop (main only)
+        entry: bash -c '[ "$(git branch --show-current)" = main ] && uv run python scripts/deploy.py || true'
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [post-merge]

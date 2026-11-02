@@ -113,8 +113,14 @@ def main(argv: list[str] | None = None) -> None:
 
                 try:
                     indexed, failed = sync_local(store.connect(store.default_path()), args.ocr)
-                except (FileNotFoundError, PermissionError) as e:
+                except FileNotFoundError as e:
                     sys.exit(str(e))
+                except PermissionError as e:
+                    sys.exit(
+                        f"{e}\nReading the Notability app's data needs Full Disk Access for "
+                        f"{os.path.realpath(sys.executable)} (System Settings > Privacy & Security "
+                        "> Full Disk Access), or for the terminal running sync."
+                    )
                 print(f"Done: {indexed} notes indexed, {failed} failed.", file=sys.stderr)
             case "sync":
                 from notability_mcp.sync import sync
