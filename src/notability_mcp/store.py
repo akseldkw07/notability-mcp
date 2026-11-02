@@ -432,6 +432,21 @@ def note_attachments(con: sqlite3.Connection, note_id: str) -> list[Attachment]:
     return [Attachment(sha, k, m, size, bool(av)) for sha, k, m, size, av in rows]
 
 
+def notes_with_attachments(con: sqlite3.Connection, hashes: list[str]) -> dict[str, list[str]]:
+    """Note ids holding each of these attachments, by SHA-512."""
+    out: dict[str, list[str]] = {}
+    for i in range(0, len(hashes), 500):  # SQLite's variable limit
+        chunk = hashes[i : i + 500]
+        rows = con.execute(
+            "SELECT DISTINCT sha512, note_id FROM attachments"
+            f" WHERE sha512 IN ({','.join('?' * len(chunk))}) ORDER BY rowid",
+            chunk,
+        )
+        for sha, note_id in rows:
+            out.setdefault(sha, []).append(note_id)
+    return out
+
+
 def asset(con: sqlite3.Connection, sha512: str) -> bytes | None:
     row = con.execute("SELECT data FROM assets WHERE sha512 = ?", (sha512,)).fetchone()
     return row[0] if row else None

@@ -162,3 +162,41 @@ def image_fb_with_ids(images: list[tuple[tuple[int, int], str]], versions=(1, 2)
     b.StartObject(2)
     b.PrependUOffsetTRelativeSlot(0, vec, 0)
     return _envelope(b, versions, b.EndObject())
+
+
+def change_log_with_image(
+    sha512: str, origin: tuple[float, float], size: tuple[float, float]
+) -> bytes:
+    """A change log with one CreateBlock op: an image on the note's implicit first page.
+    CreateBlock: {0: kind, 2: page, 3: origin, 6: size, 10: ImageAsset {0: AssetMetadata
+    {0: SHA-512}}}."""
+    b = flatbuffers.Builder(256)
+    b.StartObject(1)
+    b.Prep(1, 64)
+    for byte in reversed(bytes.fromhex(sha512)):
+        b.PrependUint8(byte)
+    b.PrependStructSlot(0, b.Offset(), 0)
+    meta = b.EndObject()
+    b.StartObject(2)
+    b.PrependUOffsetTRelativeSlot(0, meta, 0)
+    asset = b.EndObject()
+    b.StartObject(11)
+    b.PrependInt8Slot(0, 1, 0)
+    b.PrependStructSlot(2, _seq_id(b, (0, 0, 0)), 0)
+    for fid, (x, y) in ((3, origin), (6, size)):
+        b.Prep(4, 8)
+        b.PrependFloat32(y)
+        b.PrependFloat32(x)
+        b.PrependStructSlot(fid, b.Offset(), 0)
+    b.PrependUOffsetTRelativeSlot(10, asset, 0)
+    payload = b.EndObject()
+    b.StartObject(6)
+    b.PrependStructSlot(0, _id(b, 1, 5), 0)
+    b.PrependUint8Slot(4, 22, 0)
+    b.PrependUOffsetTRelativeSlot(5, payload, 0)
+    op = b.EndObject()
+    vec = _vector(b, [op])
+    b.StartObject(1)
+    b.PrependUOffsetTRelativeSlot(0, vec, 0)
+    b.Finish(b.EndObject())
+    return bytes(b.Output())

@@ -3,7 +3,7 @@ import io
 from PIL import Image, ImageOps
 
 from notability_mcp import pdf
-from notability_mcp.bundle import HIGHLIGHTER, Note, PdfPage
+from notability_mcp.bundle import HIGHLIGHTER, IMAGE_BLOCK, Block, Note, Page, PdfPage
 from notability_mcp.render import render_page
 
 
@@ -35,3 +35,22 @@ def test_highlighter_tints_white_paper_and_leaves_dark_pdf_text_dark(ink_note: N
 def test_long_edge_is_capped(ink_note: Note):
     img = Image.open(io.BytesIO(render_page(ink_note.pages[0], max_edge=400)))
     assert max(img.size) == 400
+
+
+def test_pasted_images_are_cropped_scaled_and_placed():
+    # a 20x10 image, left half red and right half blue; the block shows only the blue half,
+    # stretched to 100x50 points at (200, 300)
+    pic = Image.new("RGB", (20, 10), "red")
+    pic.paste((0, 0, 255), (10, 0, 20, 10))
+    data = io.BytesIO()
+    pic.save(data, "PNG")
+    block = Block(None, IMAGE_BLOCK, 0, (200.0, 300.0), (100.0, 50.0), (1.0, 1.0), 0.0, "ab" * 64,
+                  (10.0, 0.0, 10.0, 10.0))  # fmt: skip
+    page = Page(1, (1, 1, 0), 612, 792, blocks=[block])
+
+    img = Image.open(io.BytesIO(render_page(page, 792, image={"ab" * 64: data.getvalue()}.get)))
+
+    assert img.convert("RGB").getpixel((250, 325)) == (0, 0, 255)
+    assert img.convert("RGB").getpixel((195, 325)) == (255, 255, 255)
+    without = Image.open(io.BytesIO(render_page(page, 792)))
+    assert without.convert("RGB").getpixel((250, 325)) == (255, 255, 255)

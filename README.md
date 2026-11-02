@@ -188,10 +188,14 @@ On a library of 770 notes (17,845 pages), the first local sync took 96 s.
 | `notability_get_transcript` | A recording's timed transcript (local source) |
 | `notability_list_attachments` | The PDFs, images and audio in a note (local source) |
 | `notability_get_attachment` | A PDF page as an image or text, an image, or a file's path; only files attached to that note |
+| `notability_export_note_pdf` | Saves a note as a PDF at a path you choose (a file or folder; default `~/Desktop`), inside the allowed export folders |
+| `notability_find_notes_for_pdf` | Which notes hold a PDF (or each PDF in a folder), by exact content, and which were never imported |
 | `notability_status` | Index location, last sync, source, counts, and app formats this version can't read |
 | `notability_open_note` | Opens a note in the Mac app. Only registered with `NOTABILITY_MCP_ALLOW_OPEN=1` |
 
-All are read-only except `notability_open_note`, which changes what's on screen. Note text
+All are read-only except `notability_export_note_pdf`, which writes a file (never inside
+Notability, never over an existing file unless asked), and `notability_open_note`, which changes
+what's on screen. Note text
 (OCR, PDF text, transcripts, titles) can contain instructions aimed at the model, so text results
 are fenced as untrusted data, and titles and snippets in structured results are neutralized.
 
@@ -205,6 +209,7 @@ are fenced as untrusted data, and titles and snippets in structured results are 
 | `NOTABILITY_MCP_SOURCE` | `web` | Default for `sync --source` |
 | `NOTABILITY_LIBRARY_DIR` | the app's container `Data/Library` | Where the Mac app's data is (local source) |
 | `NOTABILITY_MCP_CACHE_DIR` | `~/Library/Caches/notability-mcp` | Scratch space for database copies |
+| `NOTABILITY_MCP_EXPORT_ROOTS` | `~/Desktop`, `~/Documents`, `~/Downloads` | Folders exports may be written in (`:`-separated); the first is the default |
 | `NOTABILITY_MCP_ALLOW_OPEN` | unset | `1` registers `notability_open_note` |
 | `NOTABILITY_MCP_OPEN_COMMAND` | `/usr/bin/open` | What `notability_open_note` runs |
 
@@ -217,7 +222,8 @@ The index is stored in `~/Library/Application Support/notability-mcp` on macOS,
   elsewhere. On 20 pages of handwritten math, Vision found 44% of the key words and 7% of the
   formulas; RapidOCR found 46% and 16%. Search will usually find the right page, but read the
   page image before trusting anything exact.
-- Page images show ink and PDF pages. Shapes, pasted images and typed text aren't drawn yet.
+- Page images (and PDF exports) show ink, PDF pages and, with the local source, pasted images.
+  Shapes and typed text aren't drawn yet.
 - Notes other people shared with you aren't synced.
 - Audio recordings aren't transcribed or searched by the web source; the local source indexes
   the transcripts Notability made.

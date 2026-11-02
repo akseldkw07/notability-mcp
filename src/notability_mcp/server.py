@@ -1,5 +1,6 @@
 """The MCP server: read-only tools over the local note index."""
 
+import hashlib
 import io
 import json
 import os
@@ -8,6 +9,7 @@ import subprocess
 import uuid
 from datetime import UTC, datetime
 from functools import cache
+from pathlib import Path
 from typing import Annotated, Literal
 
 from mcp.server import MCPServer
@@ -19,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from notability_mcp import local, pdf, store
 from notability_mcp.bundle import Note, decode_bundle, decode_local
-from notability_mcp.render import MAX_EDGE, render_page
+from notability_mcp.render import MAX_EDGE, render_image, render_page
 from notability_mcp.untrusted import create_fence, neutralize_text
 
 # Handwriting text is OCR, PDFs and transcripts come from elsewhere, and titles are whatever a
@@ -351,7 +353,7 @@ def get_page_image(
     """One note page as a PNG, to read handwriting, math and drawings exactly as written.
 
     Prefer this over OCR text whenever accuracy matters. Draws the ink over the page's PDF, if
-    any; shapes, pasted images and typed text are not shown.
+    any, and pasted images (local source); shapes and typed text are not shown.
     """
     con = _db()
     note = _note(con, note_id)
@@ -363,7 +365,16 @@ def get_page_image(
         raise ToolError(f"{note.title!r} has {len(pages)} pages; ask for 1-{len(pages)}.")
     target = pages[page - 1]
     background = store.asset(con, target.pdf.asset) if target.pdf else None
-    return Image(data=render_page(target, max_edge, background), format="png")
+    return Image(data=render_page(target, max_edge, background, _image), format="png")
+
+
+def _image(sha512: str) -> bytes | None:
+    """A pasted image's file from the Mac app's container; None where it isn't readable (no
+    Mac app, no Full Disk Access, or not downloaded): the page is drawn without it."""
+    try:
+        return local.asset(sha512)
+    except (OSError, ValueError):
+        return None
 
 
 def _clock(seconds: float) -> str:
@@ -592,6 +603,215 @@ def status() -> Status:
         pages=pages,
         drift=json.loads(drift) if drift else {},
         app_data_readable=readable,
+    )
+
+
+WRITE_FILE = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False
+)
+EXPORT_DPI = 150
+
+
+def export_roots() -> list[Path]:
+    """Folders exports may be written in: NOTABILITY_MCP_EXPORT_ROOTS (os.pathsep-separated),
+    by default Desktop, Documents and Downloads (Desktop and Documents sync to iCloud when that's
+    on)."""
+    env = os.environ.get("NOTABILITY_MCP_EXPORT_ROOTS")
+    names = env.split(os.pathsep) if env else ["~/Desktop", "~/Documents", "~/Downloads"]
+    return [Path(n).expanduser().resolve() for n in names if n.strip()]
+
+
+def _safe_name(title: str) -> str:
+    name = "".join(c if c.isprintable() and c not in '/\\:*?"<>|' else " " for c in title)
+    return " ".join(name.split()).strip(". ")[:120] or "Untitled"
+
+
+def _export_path(path: str | None, title: str, overwrite: bool) -> Path:
+    """Where to write: `path` is a .pdf file or a folder (default: the first export root). The
+    result must be inside an export root and outside the Notability app's container."""
+    roots = export_roots()
+    if not roots:
+        raise ToolError("No export folders configured (NOTABILITY_MCP_EXPORT_ROOTS is empty).")
+    target = Path(path).expanduser() if path else roots[0]
+    if not target.is_absolute():
+        raise ToolError("path must be absolute or start with ~, e.g. ~/Desktop/notes.pdf.")
+    if target.suffix.lower() != ".pdf":
+        target = target / f"{_safe_name(title)}.pdf"
+    target = target.parent.resolve() / target.name  # resolves .. and symlinked folders
+    container = local.library_dir().resolve()
+    if not any(target.is_relative_to(r) for r in roots) or target.is_relative_to(container):
+        allowed = ", ".join(str(r) for r in roots)
+        raise ToolError(
+            f"Can't write to {target}: exports go inside {allowed}. The user can allow other "
+            "folders with NOTABILITY_MCP_EXPORT_ROOTS."
+        )
+    if target.exists() and not overwrite:
+        stem, n = target.stem, 2
+        while (candidate := target.with_name(f"{stem} ({n}).pdf")).exists():
+            n += 1
+        target = candidate
+    return target
+
+
+def _page_numbers(spec: str | None, count: int) -> list[int]:
+    if not spec:
+        return list(range(1, count + 1))
+    numbers: list[int] = []
+    try:
+        for part in spec.replace(" ", "").split(","):
+            first, _, last = part.partition("-")
+            numbers += range(int(first), int(last or first) + 1)
+    except ValueError as e:
+        raise ToolError("pages looks like '1-3,7'.") from e
+    if not numbers or min(numbers) < 1 or max(numbers) > count:
+        raise ToolError(f"The note has {count} page{'s' if count != 1 else ''}; ask for 1-{count}.")
+    return list(dict.fromkeys(numbers))
+
+
+class Exported(BaseModel):
+    path: str
+    pages: int
+    bytes: int
+
+
+@mcp.tool(name="notability_export_note_pdf", title="Export note as PDF", annotations=WRITE_FILE)
+def export_note_pdf(
+    note_id: str,
+    path: Annotated[
+        str | None,
+        Field(
+            description="Where to save: a .pdf file path or a folder, e.g. "
+            "'~/Desktop/Interview/notes.pdf' or '~/Documents'. Default: ~/Desktop, named after "
+            "the note. Must be inside the user's allowed export folders."
+        ),
+    ] = None,
+    pages: Annotated[str | None, Field(description="e.g. '1-3,7'; default: every page")] = None,
+    overwrite: Annotated[
+        bool, Field(description="Replace an existing file; by default ' (2)' is added")
+    ] = False,
+) -> Exported:
+    """Save a note as a PDF file: each page drawn as in notability_get_page_image (ink over the
+    page's PDF, pasted images). Shapes and typed text aren't drawn, and the pages are images, so
+    their text isn't selectable. Files in Desktop or Documents sync to iCloud if that's on.
+    """
+    con = _db()
+    note = _note(con, note_id)
+    bundle = store.note_bundle(con, note_id)
+    if not bundle:
+        raise ToolError("This note's content isn't synced yet. Ask the user to run sync.")
+    decoded = _decode(con, note_id, bundle).pages
+    numbers = _page_numbers(pages, len(decoded))
+    target = _export_path(path, note.title, overwrite)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    def rendered():
+        backgrounds: dict[str, bytes | None] = {}
+        for number in numbers:
+            page = decoded[number - 1]
+            background = None
+            if page.pdf:
+                if page.pdf.asset not in backgrounds:
+                    backgrounds[page.pdf.asset] = store.asset(con, page.pdf.asset)
+                background = backgrounds[page.pdf.asset]
+            edge = round(max(page.width, page.height) / 72 * EXPORT_DPI)
+            out = io.BytesIO()
+            render_image(page, edge, background, _image).save(out, "JPEG", quality=85)
+            yield out.getvalue(), page.width, page.height
+
+    tmp = target.with_name(f".{target.name}.tmp")  # renamed into place: iCloud never syncs half
+    try:
+        count = pdf.write_images(rendered(), tmp)
+        tmp.replace(target)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return Exported(path=str(target), pages=count, bytes=target.stat().st_size)
+
+
+FIND_MAX_FILES = 2000
+
+
+class NoteRef(BaseModel):
+    note_id: str
+    title: str
+    folder: str | None
+
+
+class PdfMatch(BaseModel):
+    path: str = Field(description="Relative to the folder searched")
+    sha512: str
+    notes: list[NoteRef]
+
+
+class PdfSearch(BaseModel):
+    imported: list[PdfMatch]
+    not_imported: list[str] = Field(description="PDFs no note holds, by exact content")
+    scanned: int
+    truncated: bool = Field(description=f"True if more than {FIND_MAX_FILES} PDFs were found")
+    notice: str | None = None
+
+
+def _sha512(path: Path) -> str:
+    digest = hashlib.sha512()
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+@mcp.tool(name="notability_find_notes_for_pdf", title="Find notes for a PDF", annotations=READ_ONLY)
+def find_notes_for_pdf(
+    path: Annotated[
+        str,
+        Field(description="A PDF file, or a folder searched recursively, e.g. '~/Desktop/Prep'"),
+    ],
+) -> PdfSearch:
+    """Which notes contain a PDF, matched by exact file content, and which PDFs in a folder no
+    note contains. Use to find the note a document was imported into, or what's left to import.
+
+    A PDF rebuilt or edited since it was imported has different content and won't match. Hidden
+    folders are skipped. Needs the local source.
+    """
+    con = _db()
+    root = Path(path).expanduser()
+    if not root.exists():
+        raise ToolError(f"No such file or folder: {root}")
+    if root.is_file():
+        base, files = root.parent, [root]
+    else:
+        base, files = root, []
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+            files += [Path(dirpath) / f for f in sorted(filenames) if f.lower().endswith(".pdf")]
+    truncated = len(files) > FIND_MAX_FILES
+    hashes = {}
+    for f in files[:FIND_MAX_FILES]:
+        try:
+            hashes[f] = _sha512(f)
+        except OSError:
+            continue
+    holders = store.notes_with_attachments(con, sorted(set(hashes.values())))
+    notes = {n.note_id: n for n in store.all_notes(con)}
+    imported, missing = [], []
+    for f, sha in hashes.items():
+        rel = str(f.relative_to(base))
+        refs = [
+            NoteRef(note_id=i, title=_clean(notes[i].title) or "", folder=_clean(notes[i].folder))
+            for i in holders.get(sha, [])
+            if i in notes
+        ]
+        if refs:
+            imported.append(PdfMatch(path=rel, sha512=sha, notes=refs))
+        else:
+            missing.append(rel)
+    notice = None
+    if store.get_meta(con, "source") != "local":
+        notice = "Matching uses attachments, which the local source records: sync --source local"
+    return PdfSearch(
+        imported=imported,
+        not_imported=missing,
+        scanned=len(hashes),
+        truncated=truncated,
+        notice=notice,
     )
 
 

@@ -7,14 +7,14 @@ import uuid
 from pathlib import Path
 
 import pytest
-from appindex_files import handwriting_fb, image_fb, recording_fb, write
+from appindex_files import change_log_with_image, handwriting_fb, image_fb, recording_fb, write
 from conftest import FIXTURES, LECTURE, Container
 from mcp import Client
 from mcp.server import MCPServer
 from mcp.types import ImageContent
 from PIL import Image
 
-from notability_mcp import local, server, store
+from notability_mcp import local, pdf, server, store
 from notability_mcp.bundle import decode_local
 from notability_mcp.server import mcp
 from notability_mcp.sync import sync_local
@@ -185,3 +185,121 @@ async def test_open_note_is_opt_in(synced, monkeypatch):
 async def _default_tools():
     async with Client(mcp, raise_exceptions=True) as client:
         return (await client.list_tools()).tools
+
+
+@pytest.mark.anyio
+async def test_page_images_include_pasted_images(container: Container, tmp_path, monkeypatch):
+    png = io.BytesIO()
+    Image.new("RGB", (8, 8), (0, 0, 255)).save(png, "PNG")
+    sha = _attach(container, png.getvalue())
+    log = change_log_with_image(sha, origin=(100.0, 100.0), size=(200.0, 200.0))
+    (container.store / "notes" / LECTURE.upper()).write_bytes(log)
+    path = tmp_path / "index.db"
+    monkeypatch.setenv("NOTABILITY_MCP_DB", str(path))
+    con = store.connect(path)
+    sync_local(con, ocr="app")
+    con.close()
+
+    async with Client(mcp, raise_exceptions=True) as client:
+        image = await client.call_tool(
+            "notability_get_page_image", {"note_id": LECTURE, "page": 1, "max_edge": 792}
+        )
+
+    [block] = image.content
+    assert isinstance(block, ImageContent)
+    png_out = Image.open(io.BytesIO(base64.b64decode(block.data))).convert("RGB")
+    assert png_out.getpixel((200, 200)) == (0, 0, 255)
+
+
+@pytest.fixture
+def exports(tmp_path, monkeypatch) -> Path:
+    root = tmp_path / "Desktop"
+    root.mkdir()
+    monkeypatch.setenv("NOTABILITY_MCP_EXPORT_ROOTS", str(root))
+    return root
+
+
+def _pdf_pages(path: Path) -> list[tuple[float, float]]:
+    return pdf.page_sizes(path.read_bytes())
+
+
+@pytest.mark.anyio
+async def test_export_note_pdf_to_a_folder_a_file_and_never_over_a_file(synced, exports):
+    async with Client(mcp, raise_exceptions=True) as client:
+        to_folder = await client.call_tool("notability_export_note_pdf", {"note_id": LECTURE})
+        again = await client.call_tool("notability_export_note_pdf", {"note_id": LECTURE})
+        to_file = await client.call_tool(
+            "notability_export_note_pdf",
+            {"note_id": LECTURE, "path": str(exports / "sub" / "lecture.pdf")},
+        )
+        replaced = await client.call_tool(
+            "notability_export_note_pdf",
+            {"note_id": LECTURE, "path": str(exports / "sub" / "lecture.pdf"), "overwrite": True},
+        )
+
+    first = Path(to_folder.structured_content["path"])
+    assert first == exports / "Lecture 1.pdf"
+    assert Path(again.structured_content["path"]) == exports / "Lecture 1 (2).pdf"
+    assert Path(to_file.structured_content["path"]) == exports / "sub" / "lecture.pdf"
+    assert Path(replaced.structured_content["path"]) == exports / "sub" / "lecture.pdf"
+    [(w, h)] = _pdf_pages(first)  # one page, at the page's size in points
+    assert (round(w), round(h)) == (612, 792)
+    assert to_folder.structured_content["pages"] == 1
+    assert not list(exports.rglob("*.tmp"))
+
+
+@pytest.mark.anyio
+async def test_export_refuses_paths_outside_the_allowed_folders(synced, exports, tmp_path):
+    async with Client(mcp, raise_exceptions=True) as client:
+        outside = await client.call_tool(
+            "notability_export_note_pdf", {"note_id": LECTURE, "path": str(tmp_path / "x.pdf")}
+        )
+        sneaky = await client.call_tool(
+            "notability_export_note_pdf",
+            {"note_id": LECTURE, "path": str(exports / ".." / "x.pdf")},
+        )
+        bad_pages = await client.call_tool(
+            "notability_export_note_pdf", {"note_id": LECTURE, "pages": "2-3"}
+        )
+
+    assert outside.is_error and "NOTABILITY_MCP_EXPORT_ROOTS" in text(outside)
+    assert sneaky.is_error
+    assert bad_pages.is_error and "1 page" in text(bad_pages)
+    assert not (tmp_path / "x.pdf").exists()
+
+
+@pytest.mark.anyio
+async def test_export_tool_is_annotated_as_a_local_write(synced):
+    async with Client(mcp, raise_exceptions=True) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+
+    annotations = tools["notability_export_note_pdf"].annotations
+    assert annotations is not None and annotations.read_only_hint is False
+    assert annotations.destructive_hint is False and annotations.open_world_hint is False
+
+
+@pytest.mark.anyio
+async def test_find_notes_for_pdf_by_exact_content(synced, tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "prep" / ".git").mkdir(parents=True)
+    imported = repo / "prep" / "quiz.pdf"
+    imported.write_bytes((FIXTURES / "hello.pdf").read_bytes())  # same bytes as the attachment
+    (repo / "prep" / "update.pdf").write_bytes(b"%PDF-1.4 never imported")
+    (repo / "prep" / ".git" / "old.pdf").write_bytes((FIXTURES / "hello.pdf").read_bytes())
+    (repo / "notes.txt").write_text("not a pdf")
+
+    async with Client(mcp, raise_exceptions=True) as client:
+        folder = await client.call_tool("notability_find_notes_for_pdf", {"path": str(repo)})
+        one = await client.call_tool("notability_find_notes_for_pdf", {"path": str(imported)})
+        missing = await client.call_tool(
+            "notability_find_notes_for_pdf", {"path": str(repo / "nope")}
+        )
+
+    result = folder.structured_content
+    assert result["scanned"] == 2  # hidden folders and non-PDFs are skipped
+    [match] = result["imported"]
+    assert match["path"] == "prep/quiz.pdf" and match["sha512"] == synced["pdf"]
+    assert [(n["note_id"], n["title"]) for n in match["notes"]] == [(LECTURE, "Lecture 1")]
+    assert result["not_imported"] == ["prep/update.pdf"]
+    assert one.structured_content["imported"][0]["path"] == "quiz.pdf"
+    assert missing.is_error and "No such file or folder" in text(missing)

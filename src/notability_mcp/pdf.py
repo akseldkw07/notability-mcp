@@ -1,6 +1,9 @@
 """Text and images of the PDF pages notes are built on, with PDFium."""
 
+import io
 import threading
+from collections.abc import Iterable
+from pathlib import Path
 
 import pypdfium2 as pdfium
 from PIL import Image
@@ -47,3 +50,31 @@ def render(data: bytes, index: int, size: tuple[int, int]) -> Image.Image | None
         finally:
             doc.close()
     return image.resize(size) if image.size != size else image
+
+
+def write_images(pages: Iterable[tuple[bytes, float, float]], path: Path) -> int:
+    """Write a PDF with one JPEG image per page, each filling a page of the given size in points;
+    returns the page count. Pages are added one at a time, so a long note needn't fit in memory
+    as bitmaps."""
+    count = 0
+    doc = None
+    try:
+        for jpeg, width, height in pages:
+            with _lock:
+                doc = doc or pdfium.PdfDocument.new()
+                page = doc.new_page(width, height)
+                picture = pdfium.PdfImage.new(doc)
+                picture.load_jpeg(io.BytesIO(jpeg), inline=True)
+                picture.set_matrix(pdfium.PdfMatrix().scale(width, height))
+                page.insert_obj(picture)
+                page.gen_content()
+                page.close()
+            count += 1
+        with _lock:
+            if doc is not None:
+                doc.save(path)
+    finally:
+        if doc is not None:
+            with _lock:
+                doc.close()
+    return count
