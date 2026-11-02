@@ -50,6 +50,7 @@ dev = [
 
 [tool.ruff]
 line-length = 100
+extend-exclude = ["src/notability_mcp/untrusted.py"]  # vendored verbatim from mcp-utils
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
