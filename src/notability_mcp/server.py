@@ -8,6 +8,7 @@ import subprocess
 import uuid
 from datetime import UTC, datetime
 from functools import cache
+from pathlib import Path
 from typing import Annotated, Literal
 
 from mcp.server import MCPServer
@@ -19,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from notability_mcp import local, pdf, store
 from notability_mcp.bundle import Note, decode_bundle, decode_local
-from notability_mcp.render import MAX_EDGE, render_page
+from notability_mcp.render import MAX_EDGE, render_image, render_page
 from notability_mcp.untrusted import create_fence, neutralize_text
 
 # Handwriting text is OCR, PDFs and transcripts come from elsewhere, and titles are whatever a
@@ -602,6 +603,127 @@ def status() -> Status:
         drift=json.loads(drift) if drift else {},
         app_data_readable=readable,
     )
+
+
+WRITE_FILE = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False
+)
+EXPORT_DPI = 150
+
+
+def export_roots() -> list[Path]:
+    """Folders exports may be written in: NOTABILITY_MCP_EXPORT_ROOTS (os.pathsep-separated),
+    by default Desktop, Documents and Downloads (Desktop and Documents sync to iCloud when that's
+    on)."""
+    env = os.environ.get("NOTABILITY_MCP_EXPORT_ROOTS")
+    names = env.split(os.pathsep) if env else ["~/Desktop", "~/Documents", "~/Downloads"]
+    return [Path(n).expanduser().resolve() for n in names if n.strip()]
+
+
+def _safe_name(title: str) -> str:
+    name = "".join(c if c.isprintable() and c not in '/\\:*?"<>|' else " " for c in title)
+    return " ".join(name.split()).strip(". ")[:120] or "Untitled"
+
+
+def _export_path(path: str | None, title: str, overwrite: bool) -> Path:
+    """Where to write: `path` is a .pdf file or a folder (default: the first export root). The
+    result must be inside an export root and outside the Notability app's container."""
+    roots = export_roots()
+    if not roots:
+        raise ToolError("No export folders configured (NOTABILITY_MCP_EXPORT_ROOTS is empty).")
+    target = Path(path).expanduser() if path else roots[0]
+    if not target.is_absolute():
+        raise ToolError("path must be absolute or start with ~, e.g. ~/Desktop/notes.pdf.")
+    if target.suffix.lower() != ".pdf":
+        target = target / f"{_safe_name(title)}.pdf"
+    target = target.parent.resolve() / target.name  # resolves .. and symlinked folders
+    container = local.library_dir().resolve()
+    if not any(target.is_relative_to(r) for r in roots) or target.is_relative_to(container):
+        allowed = ", ".join(str(r) for r in roots)
+        raise ToolError(
+            f"Can't write to {target}: exports go inside {allowed}. The user can allow other "
+            "folders with NOTABILITY_MCP_EXPORT_ROOTS."
+        )
+    if target.exists() and not overwrite:
+        stem, n = target.stem, 2
+        while (candidate := target.with_name(f"{stem} ({n}).pdf")).exists():
+            n += 1
+        target = candidate
+    return target
+
+
+def _page_numbers(spec: str | None, count: int) -> list[int]:
+    if not spec:
+        return list(range(1, count + 1))
+    numbers: list[int] = []
+    try:
+        for part in spec.replace(" ", "").split(","):
+            first, _, last = part.partition("-")
+            numbers += range(int(first), int(last or first) + 1)
+    except ValueError as e:
+        raise ToolError("pages looks like '1-3,7'.") from e
+    if not numbers or min(numbers) < 1 or max(numbers) > count:
+        raise ToolError(f"The note has {count} page{'s' if count != 1 else ''}; ask for 1-{count}.")
+    return list(dict.fromkeys(numbers))
+
+
+class Exported(BaseModel):
+    path: str
+    pages: int
+    bytes: int
+
+
+@mcp.tool(name="notability_export_note_pdf", title="Export note as PDF", annotations=WRITE_FILE)
+def export_note_pdf(
+    note_id: str,
+    path: Annotated[
+        str | None,
+        Field(
+            description="Where to save: a .pdf file path or a folder, e.g. "
+            "'~/Desktop/Interview/notes.pdf' or '~/Documents'. Default: ~/Desktop, named after "
+            "the note. Must be inside the user's allowed export folders."
+        ),
+    ] = None,
+    pages: Annotated[str | None, Field(description="e.g. '1-3,7'; default: every page")] = None,
+    overwrite: Annotated[
+        bool, Field(description="Replace an existing file; by default ' (2)' is added")
+    ] = False,
+) -> Exported:
+    """Save a note as a PDF file: each page drawn as in notability_get_page_image (ink over the
+    page's PDF, pasted images). Shapes and typed text aren't drawn, and the pages are images, so
+    their text isn't selectable. Files in Desktop or Documents sync to iCloud if that's on.
+    """
+    con = _db()
+    note = _note(con, note_id)
+    bundle = store.note_bundle(con, note_id)
+    if not bundle:
+        raise ToolError("This note's content isn't synced yet. Ask the user to run sync.")
+    decoded = _decode(con, note_id, bundle).pages
+    numbers = _page_numbers(pages, len(decoded))
+    target = _export_path(path, note.title, overwrite)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    def rendered():
+        backgrounds: dict[str, bytes | None] = {}
+        for number in numbers:
+            page = decoded[number - 1]
+            background = None
+            if page.pdf:
+                if page.pdf.asset not in backgrounds:
+                    backgrounds[page.pdf.asset] = store.asset(con, page.pdf.asset)
+                background = backgrounds[page.pdf.asset]
+            edge = round(max(page.width, page.height) / 72 * EXPORT_DPI)
+            out = io.BytesIO()
+            render_image(page, edge, background, _image).save(out, "JPEG", quality=85)
+            yield out.getvalue(), page.width, page.height
+
+    tmp = target.with_name(f".{target.name}.tmp")  # renamed into place: iCloud never syncs half
+    try:
+        count = pdf.write_images(rendered(), tmp)
+        tmp.replace(target)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return Exported(path=str(target), pages=count, bytes=target.stat().st_size)
 
 
 WRITE_APP = ToolAnnotations(

@@ -14,7 +14,7 @@ from mcp.server import MCPServer
 from mcp.types import ImageContent
 from PIL import Image
 
-from notability_mcp import local, server, store
+from notability_mcp import local, pdf, server, store
 from notability_mcp.bundle import decode_local
 from notability_mcp.server import mcp
 from notability_mcp.sync import sync_local
@@ -209,3 +209,70 @@ async def test_page_images_include_pasted_images(container: Container, tmp_path,
     assert isinstance(block, ImageContent)
     png_out = Image.open(io.BytesIO(base64.b64decode(block.data))).convert("RGB")
     assert png_out.getpixel((200, 200)) == (0, 0, 255)
+
+
+@pytest.fixture
+def exports(tmp_path, monkeypatch) -> Path:
+    root = tmp_path / "Desktop"
+    root.mkdir()
+    monkeypatch.setenv("NOTABILITY_MCP_EXPORT_ROOTS", str(root))
+    return root
+
+
+def _pdf_pages(path: Path) -> list[tuple[float, float]]:
+    return pdf.page_sizes(path.read_bytes())
+
+
+@pytest.mark.anyio
+async def test_export_note_pdf_to_a_folder_a_file_and_never_over_a_file(synced, exports):
+    async with Client(mcp, raise_exceptions=True) as client:
+        to_folder = await client.call_tool("notability_export_note_pdf", {"note_id": LECTURE})
+        again = await client.call_tool("notability_export_note_pdf", {"note_id": LECTURE})
+        to_file = await client.call_tool(
+            "notability_export_note_pdf",
+            {"note_id": LECTURE, "path": str(exports / "sub" / "lecture.pdf")},
+        )
+        replaced = await client.call_tool(
+            "notability_export_note_pdf",
+            {"note_id": LECTURE, "path": str(exports / "sub" / "lecture.pdf"), "overwrite": True},
+        )
+
+    first = Path(to_folder.structured_content["path"])
+    assert first == exports / "Lecture 1.pdf"
+    assert Path(again.structured_content["path"]) == exports / "Lecture 1 (2).pdf"
+    assert Path(to_file.structured_content["path"]) == exports / "sub" / "lecture.pdf"
+    assert Path(replaced.structured_content["path"]) == exports / "sub" / "lecture.pdf"
+    [(w, h)] = _pdf_pages(first)  # one page, at the page's size in points
+    assert (round(w), round(h)) == (612, 792)
+    assert to_folder.structured_content["pages"] == 1
+    assert not list(exports.rglob("*.tmp"))
+
+
+@pytest.mark.anyio
+async def test_export_refuses_paths_outside_the_allowed_folders(synced, exports, tmp_path):
+    async with Client(mcp, raise_exceptions=True) as client:
+        outside = await client.call_tool(
+            "notability_export_note_pdf", {"note_id": LECTURE, "path": str(tmp_path / "x.pdf")}
+        )
+        sneaky = await client.call_tool(
+            "notability_export_note_pdf",
+            {"note_id": LECTURE, "path": str(exports / ".." / "x.pdf")},
+        )
+        bad_pages = await client.call_tool(
+            "notability_export_note_pdf", {"note_id": LECTURE, "pages": "2-3"}
+        )
+
+    assert outside.is_error and "NOTABILITY_MCP_EXPORT_ROOTS" in text(outside)
+    assert sneaky.is_error
+    assert bad_pages.is_error and "1 page" in text(bad_pages)
+    assert not (tmp_path / "x.pdf").exists()
+
+
+@pytest.mark.anyio
+async def test_export_tool_is_annotated_as_a_local_write(synced):
+    async with Client(mcp, raise_exceptions=True) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+
+    annotations = tools["notability_export_note_pdf"].annotations
+    assert annotations is not None and annotations.read_only_hint is False
+    assert annotations.destructive_hint is False and annotations.open_world_hint is False

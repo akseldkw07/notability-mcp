@@ -26,6 +26,18 @@ def render_page(
 
     Shapes and typed text are not drawn.
     """
+    out = io.BytesIO()
+    render_image(page, max_edge, background, image).save(out, "PNG", optimize=True)
+    return out.getvalue()
+
+
+def render_image(
+    page: Page,
+    max_edge: int = MAX_EDGE,
+    background: bytes | None = None,
+    image: Callable[[str], bytes | None] | None = None,
+) -> Image.Image:
+    """The page drawn as in render_page, as an RGB image."""
     k = max_edge / max(page.width, page.height)
     size = (round(page.width * k), round(page.height * k))
     s = k * _SUPERSAMPLE
@@ -42,10 +54,7 @@ def render_page(
         _draw(layer, highlights, s)
         img = ImageChops.multiply(img, layer)
     _draw(img, [ink for ink in page.inks if ink.tool != HIGHLIGHTER], s)
-    img = img.resize(size, Image.Resampling.LANCZOS)
-    out = io.BytesIO()
-    img.save(out, "PNG", optimize=True)
-    return out.getvalue()
+    return img.resize(size, Image.Resampling.LANCZOS)
 
 
 def _draw(img: Image.Image, inks: list[Ink], s: float) -> None:

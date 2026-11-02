@@ -25,6 +25,7 @@ TOOLS = {
     "notability_list_attachments",
     "notability_get_attachment",
     "notability_status",
+    "notability_export_note_pdf",
 }
 
 
@@ -79,7 +80,10 @@ async def test_every_tool_is_annotated_read_only(index):
         tools = (await client.list_tools()).tools
 
     assert {t.name for t in tools} == TOOLS
-    assert all(t.annotations and t.annotations.read_only_hint for t in tools)
+    writes = {"notability_export_note_pdf"}  # writes a file outside Notability
+    assert all(
+        t.annotations and t.annotations.read_only_hint for t in tools if t.name not in writes
+    )
 
 
 @pytest.mark.anyio
