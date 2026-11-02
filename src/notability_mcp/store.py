@@ -250,6 +250,41 @@ def match_score(words: list[str], text: str) -> float:
     return total / sum(map(len, words))
 
 
+HIGHLIGHT = 0.75  # a word in the text this similar to a query word is marked in the snippet
+SNIPPET_WORDS = 24  # words of context around the first marked word
+# equal scores: the user's own writing first, PDF text (often long textbook pages) last
+SOURCE_ORDER = {"handwriting": 0, "typed": 1, "image": 2, "recording": 3, "pdf": 4}
+
+
+def _similar(word: str, query: list[str]) -> bool:
+    w = word.lower()
+    return len(w) >= 3 and any(
+        (m := SequenceMatcher(None, q, w)).real_quick_ratio() >= HIGHLIGHT
+        and m.quick_ratio() >= HIGHLIGHT
+        and m.ratio() >= HIGHLIGHT
+        for q in query
+    )
+
+
+def make_snippet(text: str, words: list[str]) -> str | None:
+    """Context around the first word similar to a query word, with whole similar words marked
+    «like this»; None if no word is similar (e.g. only the title matched)."""
+    tokens = list(re.finditer(r"\w+", text))
+    marked = [i for i, t in enumerate(tokens) if _similar(t.group(), words)]
+    if not marked:
+        return None
+    lo = max(0, marked[0] - SNIPPET_WORDS // 3)
+    hi = min(len(tokens), lo + SNIPPET_WORDS)
+    out, pos = [], tokens[lo].start()
+    for i in range(lo, hi):
+        t = tokens[i]
+        out.append(text[pos : t.start()])
+        out.append(f"«{t.group()}»" if i in marked else t.group())
+        pos = t.end()
+    snippet = " ".join("".join(out).split())
+    return ("…" if lo else "") + snippet + ("…" if hi < len(tokens) else "")
+
+
 def search(
     con: sqlite3.Connection,
     query: str,
@@ -276,10 +311,20 @@ def search(
         (*args, CANDIDATES),
     ).fetchall()
     scored = [
-        Hit(n, t, p, s, snip, match_score(words, f"{t}\n{text}")) for n, t, p, s, text, snip in rows
+        (Hit(n, t, p, s, snip, match_score(words, f"{t}\n{text}")), text)
+        for n, t, p, s, text, snip in rows
     ]
-    hits = sorted((h for h in scored if h.score >= WEAK_MATCH), key=lambda h: -h.score)
-    return hits[offset : offset + limit], len(hits) > offset + limit
+    ranked = sorted(
+        (h for h in scored if h[0].score >= WEAK_MATCH),
+        # pages with no text match only through the note's title: last among equals
+        key=lambda h: (-h[0].score, not h[1].strip(), SOURCE_ORDER.get(h[0].source, 9)),
+    )
+    page = ranked[offset : offset + limit]
+    for hit, text in page:  # only for the hits returned: word matching is slower than FTS
+        # no similar word in the text means the title matched: show where the page starts
+        start = " ".join(text.split()[:SNIPPET_WORDS])
+        hit.snippet = make_snippet(text, words) or (start + ("…" if start != text.strip() else ""))
+    return [h for h, _ in page], len(ranked) > offset + limit
 
 
 @dataclass

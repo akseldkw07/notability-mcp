@@ -133,7 +133,10 @@ def search_notes(
     ] = None,
     sources: Annotated[
         list[store.Source] | None,
-        Field(description="Only these kinds of text, e.g. ['handwriting', 'pdf']"),
+        Field(
+            description="Only these kinds of text, e.g. ['handwriting', 'pdf']. 'recording' "
+            "is recording transcripts; 'image' is text in images and photos."
+        ),
     ] = None,
     modified_after: Annotated[
         str | None, Field(description="Only notes modified after this ISO date, e.g. '2026-10-01'")
@@ -143,8 +146,10 @@ def search_notes(
     or note title match the query, best first.
 
     Use for a topic, term or phrase across all notes. Each hit is one page with a snippet; open
-    it with notability_read_note or notability_get_page_image. To browse by folder or date,
-    use notability_list_notes instead.
+    it with notability_read_note or notability_get_page_image. Hits with page null are
+    note-level: open recording hits with notability_get_transcript, others with
+    notability_read_note. On equal scores, handwriting ranks above PDF text. To browse by
+    folder or date, use notability_list_notes instead.
     """
     con, offset = _db(), _offset(cursor)
     note_ids = None
@@ -296,8 +301,10 @@ def read_note(
     texts = store.note_pages(con, note_id)
     if start_page == 1 and (typed := [t.text for t in texts if t.source == "typed"]):
         out += ["", "## Typed text", *typed]
-    if start_page == 1 and (images := [t.text for t in texts if t.source == "image"]):
-        out += ["", "## Image text", "\n\n".join(images)]
+    if start_page == 1 and (
+        images := [t.text for t in texts if t.source == "image" and not t.page]
+    ):
+        out += ["", "## Image text (page not recorded)", "\n\n".join(images)]
     if start_page == 1 and (n := len(store.note_transcripts(con, note_id))):
         out += [
             "",
@@ -306,6 +313,10 @@ def read_note(
         ]
     by_page = {t.page: t for t in texts if t.source == "handwriting"}
     pdf_by_page = {t.page: t.text for t in texts if t.source == "pdf"}
+    images_by_page: dict[int, list[str]] = {}
+    for t in texts:
+        if t.source == "image" and t.page:
+            images_by_page.setdefault(t.page, []).append(t.text)
     size = sum(len(s) for s in out)
     for number in range(start_page, last + 1):
         page = by_page.get(number)
@@ -313,6 +324,9 @@ def read_note(
         body = page.text if page and page.text else ""
         if pdf_text:
             body = f"{body}\n\nPDF text:\n{pdf_text}" if body else f"PDF text:\n{pdf_text}"
+        if page_images := images_by_page.get(number):
+            body = (body or "(no handwriting recognized)") + "\n\n### Image text\n"
+            body += "\n\n".join(page_images)
         flag = ""
         if page and page.confidence is not None and page.confidence < LOW_CONFIDENCE:
             flag = " (low OCR confidence: view with notability_get_page_image)"

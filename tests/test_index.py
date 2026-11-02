@@ -37,7 +37,7 @@ def test_the_apps_recognized_text_replaces_ocr_and_vision_fills_only_real_gaps(m
     note = _pages([_ink()], [_ink()], [_ink(HIGHLIGHTER)], [])
     app = AppText(
         handwriting={1: "from the app"},
-        images=["EXIT sign"],
+        images=[(0, "EXIT sign")],
         transcripts=[Transcript("ab" * 64, "en-US", [(0.0, 1.0, "so"), (1.0, 2.0, "today")])],
     )
 
