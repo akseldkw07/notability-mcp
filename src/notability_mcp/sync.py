@@ -4,14 +4,18 @@ import logging
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Literal
 
-from notability_mcp import api, local, store
+from notability_mcp import api, appindex, local, store
 from notability_mcp.bundle import Note, decode_bundle, decode_local
-from notability_mcp.index import index_note
+from notability_mcp.index import AppText, index_note
 from notability_mcp.store import Folder, NoteMeta
 
 log = logging.getLogger(__name__)
 INDEX_VERSION = "2"  # bump when indexing changes, so the next sync re-indexes every note
+LOCAL_INDEX_VERSION = "1"  # the same, for what only the local source indexes
+
+type OcrMode = Literal["auto", "app", "vision"]
 
 
 def _iso(ms: float | None) -> str | None:
@@ -62,23 +66,37 @@ def sync(con: sqlite3.Connection, token: str) -> tuple[int, int]:
     )
 
 
-def sync_local(con: sqlite3.Connection) -> tuple[int, int]:
+def sync_local(con: sqlite3.Connection, ocr: OcrMode = "auto") -> tuple[int, int]:
     """Like sync, but from the Mac app's own data (see local.py): no token, no network.
 
-    Notes whose content the app hasn't downloaded stay listed and are indexed by a later sync,
-    once the app has them. Returns (indexed, failed)."""
+    Handwriting comes from the app's own recognition (appindex.py), along with image OCR and
+    recording transcripts. `ocr`: "auto" also runs Vision on inked pages the app found no text
+    in, "app" never runs Vision, "vision" ignores the app's handwriting text.
+
+    A note is re-indexed when it changes or when the app rewrites its index files, which it
+    does a few minutes after an edit. Notes whose content the app hasn't downloaded stay listed
+    and are indexed by a later sync, once the app has them. Returns (indexed, failed)."""
     with local.snapshot() as app:
         folders, notes = local.read_library(app)
     store.save_library(con, folders, notes)
-    # the two sources store different formats in notes.bundle: switching re-indexes every note
-    store.require_index_version(con, f"{INDEX_VERSION}/local")
+    # the two sources store different formats in notes.bundle, so switching source re-indexes
+    # every note; so does switching OCR mode
+    store.require_index_version(con, f"{INDEX_VERSION}/local{LOCAL_INDEX_VERSION}/{ocr}")
     store.set_meta(con, "source", "local")
+    store.set_meta(con, "ocr", ocr)
+    signatures = {n.id: appindex.signature(n.id) for n in notes}
+    store.mark_stale(
+        con, [i for i, sig in signatures.items() if store.get_meta(con, f"appindex:{i}") != sig]
+    )
     return _index_stale(
         con,
         {n.id: n.title for n in notes},
         local.change_log,
         lambda note_id, sha: local.asset(sha),
         decode_local,
+        app_text=lambda note: appindex.read(note, handwriting_text=ocr != "vision"),
+        vision=ocr != "app",
+        on_indexed=lambda note_id: store.set_meta(con, f"appindex:{note_id}", signatures[note_id]),
     )
 
 
@@ -88,6 +106,9 @@ def _index_stale(
     fetch_bundle: Callable[[str], bytes | None],
     fetch_asset: Callable[[str, str], bytes | None],
     decode: Callable[[str, bytes], Note],
+    app_text: Callable[[Note], AppText] | None = None,
+    vision: bool = True,
+    on_indexed: Callable[[str], None] | None = None,
 ) -> tuple[int, int]:
     stale = store.stale_notes(con)
     log.info("%d notes in library, %d to download and index", len(titles), len(stale))
@@ -105,6 +126,8 @@ def _index_stale(
                 bundle,
                 lambda sha, note_id=note_id: fetch_asset(note_id, sha),
                 decode,
+                app_text,
+                vision,
             )
         except api.AuthError:
             raise
@@ -113,5 +136,7 @@ def _index_stale(
             log.exception("[%d/%d] %s: failed", i, len(stale), titles.get(note_id))
             continue
         indexed += 1
+        if on_indexed:
+            on_indexed(note_id)
         log.info("[%d/%d] %s (%d pages)", i, len(stale), titles.get(note_id), pages)
     return indexed, failed

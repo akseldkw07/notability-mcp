@@ -1,6 +1,10 @@
+import os
+
+from appindex_files import handwriting_fb, recording_fb, write
 from conftest import LECTURE, NOT_DOWNLOADED, TRASHED, Container
 
 from notability_mcp import local, store
+from notability_mcp.bundle import decode_local
 from notability_mcp.sync import sync_local
 
 
@@ -49,3 +53,35 @@ def test_sync_local_indexes_change_logs_and_only_changed_notes(container: Contai
     assert (hit.note_id, hit.source) == (LECTURE, "typed")
     assert store.get_meta(con, "source") == "local"
     assert {n.note_id for n in store.all_notes(con)} == {LECTURE, NOT_DOWNLOADED}
+
+
+def test_sync_local_uses_the_apps_text_and_follows_its_reindexing(container: Container, tmp_path):
+    con = store.connect(tmp_path / "index.db")
+    page = decode_local(LECTURE, local.change_log(LECTURE) or b"").pages[0]
+    hw = write(
+        container.library,
+        "NoteHandwritingIndexer",
+        LECTURE,
+        "HandwritingIndex.fb",
+        handwriting_fb([(page.id, "harmonic conjugate")]),
+    )
+    write(
+        container.library,
+        "NoteRecordingIndexer",
+        LECTURE,
+        "RecordingIndex.fb",
+        recording_fb([("cd" * 64, "en-US", [(0.0, 3.0, "residue theorem")])]),
+    )
+
+    assert sync_local(con, ocr="app") == (1, 0)
+    [hit], _ = store.search(con, "harmonic")
+    assert (hit.note_id, hit.page, hit.source) == (LECTURE, 1, "handwriting")
+    [rec] = store.note_transcripts(con, LECTURE)
+    assert rec.segments == [(0.0, 3.0, "residue theorem")]
+
+    # the app re-recognizes the page minutes after the edit; the note itself is unchanged
+    hw.write_bytes(handwriting_fb([(page.id, "laurent series")]))
+    os.utime(hw, (2_000_000_000, 2_000_000_000))
+    assert sync_local(con, ocr="app") == (1, 0)
+    assert store.search(con, "laurent")[0]
+    assert sync_local(con, ocr="app") == (0, 0)
