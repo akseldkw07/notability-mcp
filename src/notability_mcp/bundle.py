@@ -374,5 +374,12 @@ def _page(number: int, pid: SeqId, bg: dict) -> Page:
         digest, offset, crop_boxes = pdf
         page.pdf = PdfPage(digest, offset + pid[2])
         if pid[2] < len(crop_boxes):
-            page.width, page.height = crop_boxes[pid[2]]
+            width, height = crop_boxes[pid[2]]
+            if "size" in bg and width > 0:
+                # ink is placed in the background's space, the PDF page scaled to the
+                # background's width (crop boxes are in PDF points): about a quarter of inked
+                # PDF pages in a real library drew their ink off the page with the crop box
+                page.height = height * page.width / width
+            else:
+                page.width, page.height = width, height
     return page

@@ -13,7 +13,7 @@ from notability_mcp.index import AppText, index_note
 from notability_mcp.store import Folder, NoteMeta
 
 log = logging.getLogger(__name__)
-INDEX_VERSION = "2"  # bump when indexing changes, so the next sync re-indexes every note
+INDEX_VERSION = "3"  # bump when indexing changes, so the next sync re-indexes every note
 LOCAL_INDEX_VERSION = "1"  # the same, for what only the local source indexes
 
 type OcrMode = Literal["auto", "app", "vision"]

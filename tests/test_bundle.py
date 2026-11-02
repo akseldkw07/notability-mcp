@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from notability_mcp.bundle import Note, decode_bundle, decode_local, linearize
+from notability_mcp.bundle import Note, PdfPage, _page, decode_bundle, decode_local, linearize
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -40,3 +40,20 @@ def test_mac_app_change_log_decodes_like_the_bundle(local_log):
 
     assert note.id == "6a1d9e4c-0b7f-4c1e-9a52-3f0d2b8e7c11"
     assert (note.text, len(note.pages)) == (web.text, len(web.pages))
+
+
+def test_a_pdf_page_takes_the_backgrounds_width_and_its_own_shape():
+    # ink is placed in the background's space: the PDF page scaled to the background's width
+    bg = {"size": (610.0, 458.0), "pdf": ("ab" * 64, 0, [(363.0, 272.0), (363.0, 500.0)])}
+
+    first, second = _page(1, (1, 1, 0), bg), _page(2, (1, 1, 1), bg)
+
+    assert (first.width, round(first.height, 1)) == (610.0, 457.1)
+    assert (second.width, round(second.height, 1)) == (610.0, 840.2)
+    assert second.pdf == PdfPage("ab" * 64, 1)
+
+
+def test_without_a_background_size_the_crop_box_is_the_page():
+    page = _page(1, (1, 1, 0), {"pdf": ("ab" * 64, 0, [(363.0, 272.0)])})
+
+    assert (page.width, page.height) == (363.0, 272.0)
