@@ -1,14 +1,21 @@
+import base64
+import io
+import json
 from pathlib import Path
 
 import pytest
+from conftest import LECTURE
 from mcp import Client
 from mcp.types import ImageContent
+from PIL import Image as PILImage
 
 from notability_mcp import server, store
 from notability_mcp.server import mcp
 from notability_mcp.store import Folder, NoteMeta, PageText
+from notability_mcp.sync import sync_local
 
-BUNDLE = (Path(__file__).parent / "fixtures" / "synthetic_bundle.bin").read_bytes()
+FIXTURES = Path(__file__).parent / "fixtures"
+BUNDLE = (FIXTURES / "synthetic_bundle.bin").read_bytes()
 TOOLS = {
     "notability_search_notes",
     "notability_list_notes",
@@ -133,3 +140,26 @@ async def test_missing_index_asks_the_user_to_sync(tmp_path, monkeypatch):
         result = await client.call_tool("notability_list_notes", {})
 
     assert result.is_error and "notability-mcp sync" in text(result)
+
+
+@pytest.mark.anyio
+async def test_a_note_synced_from_the_mac_app_renders_its_ink(container, tmp_path, monkeypatch):
+    # a captured AppendOpsEvent has the change log's layout (ops in root field 0): one pen stroke
+    event = json.loads((FIXTURES / "25_ink_pen.json").read_text())["append_ops_event_hex"]
+    (container.store / "notes" / LECTURE.upper()).write_bytes(bytes.fromhex(event))
+    path = tmp_path / "local.db"
+    monkeypatch.setenv("NOTABILITY_MCP_DB", str(path))
+    con = store.connect(path)
+    sync_local(con)
+    con.close()
+
+    async with Client(mcp, raise_exceptions=True) as client:
+        image = await client.call_tool(
+            "notability_get_page_image", {"note_id": LECTURE, "page": 1, "max_edge": 512}
+        )
+
+    [block] = image.content
+    assert isinstance(block, ImageContent)
+    png = PILImage.open(io.BytesIO(base64.b64decode(block.data))).convert("L")
+    darkest, _ = png.getextrema()
+    assert isinstance(darkest, int) and darkest < 128  # dark ink on the white page

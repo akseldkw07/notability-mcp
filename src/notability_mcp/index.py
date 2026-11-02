@@ -31,14 +31,22 @@ def page_texts(note: Note, pdfs: dict[str, bytes] | None = None) -> list[PageTex
 
 
 def index_note(
-    con: sqlite3.Connection, note_id: str, bundle: bytes, fetch_asset: Callable[[str], bytes]
+    con: sqlite3.Connection,
+    note_id: str,
+    bundle: bytes,
+    fetch_asset: Callable[[str], bytes | None],
+    decode: Callable[[str, bytes], Note] = lambda _, b: decode_bundle(b),
 ) -> int:
-    """Decode, OCR and store one note, downloading PDFs not stored yet; returns its page count."""
-    note = decode_bundle(bundle) if bundle else Note(note_id, None, [], "")
+    """Decode, OCR and store one note, fetching PDFs not stored yet; returns its page count.
+
+    A PDF the source doesn't have (the Mac app may not have downloaded it) is left out: its pages
+    are indexed without PDF text and drawn without a background."""
+    note = decode(note_id, bundle) if bundle else Note(note_id, None, [], "")
     pdfs = {}
     for sha in {page.pdf.asset for page in note.pages if page.pdf}:
         if (data := store.asset(con, sha)) is None:
-            data = fetch_asset(sha)
+            if (data := fetch_asset(sha)) is None:
+                continue
             store.save_asset(con, sha, data)
         pdfs[sha] = data
     store.save_note(con, note_id, bundle, len(note.pages), page_texts(note, pdfs))

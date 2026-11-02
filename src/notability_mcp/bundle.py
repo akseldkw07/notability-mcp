@@ -174,12 +174,18 @@ def read_ops(buf: bytes, ops_field: int) -> list[tuple[Id, int, _Table]]:
 
 
 def decode_bundle(buf: bytes) -> Note:
-    """Decode a NoteBundle as returned by the collab API or cached by the desktop app."""
+    """Decode a NoteBundle as returned by the collab API."""
     root = _Table(buf, struct.unpack_from("<I", buf, 0)[0])
     lo, hi = root._unpack(0, _UUID) or (0, 0)
     h = f"{(hi << 64) | lo:032x}"
     note_id = f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
     return build_note(note_id, read_ops(buf, 6))
+
+
+def decode_local(note_id: str, buf: bytes) -> Note:
+    """Decode the Mac app's per-note change log (`notes/<UUID>` in its container): the same
+    ops as a NoteBundle, but in root field 0, and without the note id."""
+    return build_note(note_id, read_ops(buf, 0))
 
 
 def linearize(nodes: list[tuple[SeqId, SeqId | None]]) -> list[SeqId]:

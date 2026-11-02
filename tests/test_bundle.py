@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from notability_mcp.bundle import Note, decode_bundle, linearize
+from notability_mcp.bundle import Note, decode_bundle, decode_local, linearize
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -30,3 +30,13 @@ def test_rga_orders_newest_sibling_first():
 def test_rga_survives_an_anchor_cycle():
     a, b = (1, 1, 0), (1, 2, 0)
     assert linearize([(a, None), (b, a), (a, b)]) == [a, b]
+
+
+def test_mac_app_change_log_decodes_like_the_bundle(local_log):
+    bundle = (FIXTURES / "synthetic_bundle.bin").read_bytes()
+    web = decode_bundle(bundle)
+
+    note = decode_local("6a1d9e4c-0b7f-4c1e-9a52-3f0d2b8e7c11", local_log(bundle))
+
+    assert note.id == "6a1d9e4c-0b7f-4c1e-9a52-3f0d2b8e7c11"
+    assert (note.text, len(note.pages)) == (web.text, len(web.pages))

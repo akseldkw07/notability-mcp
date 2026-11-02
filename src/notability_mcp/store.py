@@ -236,6 +236,11 @@ def get_meta(con: sqlite3.Connection, key: str) -> str | None:
     return row[0] if row else None
 
 
+def set_meta(con: sqlite3.Connection, key: str, value: str) -> None:
+    with con:
+        con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, value))
+
+
 def device_id(con: sqlite3.Connection) -> str:
     """A stable random id for this install, sent with bundle requests like the web app does."""
     if existing := get_meta(con, "device_id"):

@@ -12,7 +12,7 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
 from notability_mcp import store
-from notability_mcp.bundle import decode_bundle
+from notability_mcp.bundle import Note, decode_bundle, decode_local
 from notability_mcp.render import MAX_EDGE, render_page
 
 INSTRUCTIONS = """\
@@ -51,6 +51,13 @@ def _note(con: sqlite3.Connection, note_id: str) -> store.NoteRow:
         f"No note with id {note_id!r}. Find ids with notability_search_notes or "
         "notability_list_notes."
     )
+
+
+def _decode(con: sqlite3.Connection, note_id: str, bundle: bytes) -> Note:
+    """Stored bundles are NoteBundles from the web, or the Mac app's change logs (local sync)."""
+    if store.get_meta(con, "source") == "local":
+        return decode_local(note_id, bundle)
+    return decode_bundle(bundle)
 
 
 def _offset(cursor: str | None) -> int:
@@ -265,7 +272,7 @@ def get_page_image(
     bundle = store.note_bundle(con, note_id)
     if not bundle:
         raise ToolError("This note's content isn't synced yet. Ask the user to run sync.")
-    pages = decode_bundle(bundle).pages
+    pages = _decode(con, note_id, bundle).pages
     if page > len(pages):
         raise ToolError(f"{note.title!r} has {len(pages)} pages; ask for 1-{len(pages)}.")
     target = pages[page - 1]

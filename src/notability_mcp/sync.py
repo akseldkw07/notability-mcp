@@ -2,9 +2,11 @@
 
 import logging
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime
 
-from notability_mcp import api, store
+from notability_mcp import api, local, store
+from notability_mcp.bundle import Note, decode_bundle, decode_local
 from notability_mcp.index import index_note
 from notability_mcp.store import Folder, NoteMeta
 
@@ -49,17 +51,60 @@ def sync(con: sqlite3.Connection, token: str) -> tuple[int, int]:
     folders, notes = parse_library(api.fetch_library(token))
     store.save_library(con, folders, notes)
     store.require_index_version(con, INDEX_VERSION)
-    titles = {n.id: n.title for n in notes}
-    stale, device = store.stale_notes(con), store.device_id(con)
-    log.info("%d notes in library, %d to download and index", len(notes), len(stale))
-    failed = 0
+    store.set_meta(con, "source", "web")
+    device = store.device_id(con)
+    return _index_stale(
+        con,
+        {n.id: n.title for n in notes},
+        lambda note_id: api.fetch_bundle(token, note_id, device),
+        lambda note_id, sha: api.fetch_asset(token, note_id, sha),
+        lambda _, bundle: decode_bundle(bundle),
+    )
+
+
+def sync_local(con: sqlite3.Connection) -> tuple[int, int]:
+    """Like sync, but from the Mac app's own data (see local.py): no token, no network.
+
+    Notes whose content the app hasn't downloaded stay listed and are indexed by a later sync,
+    once the app has them. Returns (indexed, failed)."""
+    with local.snapshot() as app:
+        folders, notes = local.read_library(app)
+    store.save_library(con, folders, notes)
+    # the two sources store different formats in notes.bundle: switching re-indexes every note
+    store.require_index_version(con, f"{INDEX_VERSION}/local")
+    store.set_meta(con, "source", "local")
+    return _index_stale(
+        con,
+        {n.id: n.title for n in notes},
+        local.change_log,
+        lambda note_id, sha: local.asset(sha),
+        decode_local,
+    )
+
+
+def _index_stale(
+    con: sqlite3.Connection,
+    titles: dict[str, str],
+    fetch_bundle: Callable[[str], bytes | None],
+    fetch_asset: Callable[[str, str], bytes | None],
+    decode: Callable[[str, bytes], Note],
+) -> tuple[int, int]:
+    stale = store.stale_notes(con)
+    log.info("%d notes in library, %d to download and index", len(titles), len(stale))
+    indexed = failed = 0
     for i, note_id in enumerate(stale, 1):
         try:
+            if (bundle := fetch_bundle(note_id)) is None:
+                log.info(
+                    "[%d/%d] %s: content not downloaded yet", i, len(stale), titles.get(note_id)
+                )
+                continue
             pages = index_note(
                 con,
                 note_id,
-                api.fetch_bundle(token, note_id, device),
-                lambda sha, note_id=note_id: api.fetch_asset(token, note_id, sha),
+                bundle,
+                lambda sha, note_id=note_id: fetch_asset(note_id, sha),
+                decode,
             )
         except api.AuthError:
             raise
@@ -67,5 +112,6 @@ def sync(con: sqlite3.Connection, token: str) -> tuple[int, int]:
             failed += 1
             log.exception("[%d/%d] %s: failed", i, len(stale), titles.get(note_id))
             continue
+        indexed += 1
         log.info("[%d/%d] %s (%d pages)", i, len(stale), titles.get(note_id), pages)
-    return len(stale) - failed, failed
+    return indexed, failed

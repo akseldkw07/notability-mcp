@@ -68,7 +68,14 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("serve", help="run the MCP server on stdio")
     sub.add_parser("login", help="store your Notability session token in the system keychain")
     sub.add_parser("logout", help="remove the stored token")
-    sub.add_parser("sync", help="download changed notes and update the search index")
+    sync_cmd = sub.add_parser("sync", help="download changed notes and update the search index")
+    sync_cmd.add_argument(
+        "--source",
+        choices=["web", "local"],
+        default=os.environ.get("NOTABILITY_MCP_SOURCE", "web"),
+        help="web: Notability's web API, with your token (default). local: the Notability Mac "
+        "app's own data, with no token or network; needs Full Disk Access.",
+    )
     sub.add_parser("setup", help="add the server to Claude Desktop")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")  # stderr; stdout is MCP's
@@ -94,6 +101,14 @@ def main(argv: list[str] | None = None) -> None:
                 except PasswordDeleteError:
                     sys.exit("No token was stored.")
                 print("Token removed from the system keychain.", file=sys.stderr)
+            case "sync" if args.source == "local":
+                from notability_mcp.sync import sync_local
+
+                try:
+                    indexed, failed = sync_local(store.connect(store.default_path()))
+                except (FileNotFoundError, PermissionError) as e:
+                    sys.exit(str(e))
+                print(f"Done: {indexed} notes indexed, {failed} failed.", file=sys.stderr)
             case "sync":
                 from notability_mcp.sync import sync
 
