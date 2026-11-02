@@ -276,3 +276,30 @@ async def test_export_tool_is_annotated_as_a_local_write(synced):
     annotations = tools["notability_export_note_pdf"].annotations
     assert annotations is not None and annotations.read_only_hint is False
     assert annotations.destructive_hint is False and annotations.open_world_hint is False
+
+
+@pytest.mark.anyio
+async def test_find_notes_for_pdf_by_exact_content(synced, tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "prep" / ".git").mkdir(parents=True)
+    imported = repo / "prep" / "quiz.pdf"
+    imported.write_bytes((FIXTURES / "hello.pdf").read_bytes())  # same bytes as the attachment
+    (repo / "prep" / "update.pdf").write_bytes(b"%PDF-1.4 never imported")
+    (repo / "prep" / ".git" / "old.pdf").write_bytes((FIXTURES / "hello.pdf").read_bytes())
+    (repo / "notes.txt").write_text("not a pdf")
+
+    async with Client(mcp, raise_exceptions=True) as client:
+        folder = await client.call_tool("notability_find_notes_for_pdf", {"path": str(repo)})
+        one = await client.call_tool("notability_find_notes_for_pdf", {"path": str(imported)})
+        missing = await client.call_tool(
+            "notability_find_notes_for_pdf", {"path": str(repo / "nope")}
+        )
+
+    result = folder.structured_content
+    assert result["scanned"] == 2  # hidden folders and non-PDFs are skipped
+    [match] = result["imported"]
+    assert match["path"] == "prep/quiz.pdf" and match["sha512"] == synced["pdf"]
+    assert [(n["note_id"], n["title"]) for n in match["notes"]] == [(LECTURE, "Lecture 1")]
+    assert result["not_imported"] == ["prep/update.pdf"]
+    assert one.structured_content["imported"][0]["path"] == "quiz.pdf"
+    assert missing.is_error and "No such file or folder" in text(missing)

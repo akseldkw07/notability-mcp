@@ -1,5 +1,6 @@
 """The MCP server: read-only tools over the local note index."""
 
+import hashlib
 import io
 import json
 import os
@@ -724,6 +725,94 @@ def export_note_pdf(
     finally:
         tmp.unlink(missing_ok=True)
     return Exported(path=str(target), pages=count, bytes=target.stat().st_size)
+
+
+FIND_MAX_FILES = 2000
+
+
+class NoteRef(BaseModel):
+    note_id: str
+    title: str
+    folder: str | None
+
+
+class PdfMatch(BaseModel):
+    path: str = Field(description="Relative to the folder searched")
+    sha512: str
+    notes: list[NoteRef]
+
+
+class PdfSearch(BaseModel):
+    imported: list[PdfMatch]
+    not_imported: list[str] = Field(description="PDFs no note holds, by exact content")
+    scanned: int
+    truncated: bool = Field(description=f"True if more than {FIND_MAX_FILES} PDFs were found")
+    notice: str | None = None
+
+
+def _sha512(path: Path) -> str:
+    digest = hashlib.sha512()
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+@mcp.tool(name="notability_find_notes_for_pdf", title="Find notes for a PDF", annotations=READ_ONLY)
+def find_notes_for_pdf(
+    path: Annotated[
+        str,
+        Field(description="A PDF file, or a folder searched recursively, e.g. '~/Desktop/Prep'"),
+    ],
+) -> PdfSearch:
+    """Which notes contain a PDF, matched by exact file content, and which PDFs in a folder no
+    note contains. Use to find the note a document was imported into, or what's left to import.
+
+    A PDF rebuilt or edited since it was imported has different content and won't match. Hidden
+    folders are skipped. Needs the local source.
+    """
+    con = _db()
+    root = Path(path).expanduser()
+    if not root.exists():
+        raise ToolError(f"No such file or folder: {root}")
+    if root.is_file():
+        base, files = root.parent, [root]
+    else:
+        base, files = root, []
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+            files += [Path(dirpath) / f for f in sorted(filenames) if f.lower().endswith(".pdf")]
+    truncated = len(files) > FIND_MAX_FILES
+    hashes = {}
+    for f in files[:FIND_MAX_FILES]:
+        try:
+            hashes[f] = _sha512(f)
+        except OSError:
+            continue
+    holders = store.notes_with_attachments(con, sorted(set(hashes.values())))
+    notes = {n.note_id: n for n in store.all_notes(con)}
+    imported, missing = [], []
+    for f, sha in hashes.items():
+        rel = str(f.relative_to(base))
+        refs = [
+            NoteRef(note_id=i, title=_clean(notes[i].title) or "", folder=_clean(notes[i].folder))
+            for i in holders.get(sha, [])
+            if i in notes
+        ]
+        if refs:
+            imported.append(PdfMatch(path=rel, sha512=sha, notes=refs))
+        else:
+            missing.append(rel)
+    notice = None
+    if store.get_meta(con, "source") != "local":
+        notice = "Matching uses attachments, which the local source records: sync --source local"
+    return PdfSearch(
+        imported=imported,
+        not_imported=missing,
+        scanned=len(hashes),
+        truncated=truncated,
+        notice=notice,
+    )
 
 
 WRITE_APP = ToolAnnotations(

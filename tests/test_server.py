@@ -26,6 +26,7 @@ TOOLS = {
     "notability_get_attachment",
     "notability_status",
     "notability_export_note_pdf",
+    "notability_find_notes_for_pdf",
 }
 
 
