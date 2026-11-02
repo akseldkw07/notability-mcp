@@ -18,7 +18,7 @@ class AppText:
     """Text the Notability Mac app has already recognized for a note (see appindex.py)."""
 
     handwriting: dict[int, str] | None = None  # by page number; None: the app hasn't indexed it
-    images: list[str] = field(default_factory=list)
+    images: list[tuple[int, str]] = field(default_factory=list)  # (page number or 0, text)
     transcripts: list[Transcript] = field(default_factory=list)
 
 
@@ -43,7 +43,7 @@ def page_texts(
     unless `vision` is off; with the app's text, pages with only highlighter are skipped."""
     texts = [PageText(0, "typed", note.text)] if note.text else []
     if app:
-        texts += [PageText(0, "image", t) for t in app.images]
+        texts += [PageText(page, "image", t) for page, t in app.images]
         texts += [
             PageText(0, "recording", " ".join(s[2] for s in t.segments if s[2]))
             for t in app.transcripts

@@ -81,3 +81,50 @@ def test_deleted_notes_leave_the_index(con):
 def test_query_needs_a_real_word(con):
     with pytest.raises(store.QueryError):
         store.search(con, "is a")
+
+
+def test_snippets_highlight_whole_matching_words_only(tmp_path):
+    con = store.connect(tmp_path / "index.db")
+    store.save_library(con, [], [NoteMeta("n", "CNN", None, None, "2026-10-01T00:00:00+00:00")])
+    text = "Using 1x1 convolution reduces dimensionality, see pillustrations.com"
+    store.save_note(con, "n", b"", 1, [PageText(1, "pdf", text)])
+
+    [hit], _ = store.search(con, "convolusion")
+
+    assert "«convolution»" in hit.snippet
+    assert hit.snippet.count("«") == 1  # not "dimen«sion»ality" or «Usi»ng
+
+
+def test_handwriting_wins_ties_over_pdf_text(tmp_path):
+    con = store.connect(tmp_path / "index.db")
+    store.save_library(con, [], [NoteMeta("n", "Linear", None, None, "2026-10-01T00:00:00+00:00")])
+    store.save_note(
+        con,
+        "n",
+        b"",
+        2,
+        [PageText(1, "pdf", "eigenvalue " * 40), PageText(2, "handwriting", "eigenvalue")],
+    )
+
+    hits, _ = store.search(con, "eigenvalue")
+
+    assert [h.source for h in hits] == ["handwriting", "pdf"]
+
+
+def test_blank_pages_matching_only_by_title_rank_last(tmp_path):
+    con = store.connect(tmp_path / "index.db")
+    store.save_library(
+        con,
+        [],
+        [
+            NoteMeta("t", "Convolution lecture", None, None, "2026-10-01T00:00:00+00:00"),
+            NoteMeta("p", "Slides", None, None, "2026-10-01T00:00:00+00:00"),
+        ],
+    )
+    store.save_note(con, "t", b"", 1, [PageText(1, "handwriting", "")])
+    store.save_note(con, "p", b"", 1, [PageText(1, "pdf", "a convolution layer")])
+
+    hits, _ = store.search(con, "convolution")
+
+    assert [(h.note_id, h.source) for h in hits] == [("p", "pdf"), ("t", "handwriting")]
+    assert "«" not in hits[1].snippet

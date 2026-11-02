@@ -2,16 +2,18 @@ import os
 
 import pytest
 from appindex_files import (
+    change_log,
     handwriting_fb,
     handwriting_plist,
     image_fb,
+    image_fb_with_ids,
     recording_fb,
     write,
 )
 from conftest import LECTURE, Container
 
 from notability_mcp import appindex, local
-from notability_mcp.bundle import Note, Page
+from notability_mcp.bundle import Note, Page, decode_local
 
 AUDIO = "ab" * 64
 
@@ -82,7 +84,7 @@ def test_image_text_and_transcripts(container: Container):
         recording_fb([(AUDIO, "en-US", [(0.0, 2.5, "so today"), (2.5, 4.0, "we start")])]),
     )
 
-    assert appindex.image_text(LECTURE) == ["EXIT"]
+    assert appindex.image_text(LECTURE) == [((1, 0), "EXIT")]
     [rec] = appindex.transcripts(LECTURE)
     assert (rec.asset, rec.language) == (AUDIO, "en-US")
     assert rec.segments == [(0.0, 2.5, "so today"), (2.5, 4.0, "we start")]
@@ -115,3 +117,25 @@ def test_signature_changes_when_the_app_reindexes(container: Container):
 
     assert appindex.signature(LECTURE) != before
     assert local.library_dir() == container.library
+
+
+def test_image_text_lands_on_the_page_holding_the_image(container: Container):
+    # two pages, an image block on the second; a second image whose block was never seen
+    log = change_log(
+        [
+            ((1, 10), 3, {}),
+            ((1, 11), 3, {0: (1, 10, 0)}),
+            ((1, 12), 22, {2: (1, 11, 0)}),
+        ]
+    )
+    note = decode_local(LECTURE, log)
+    write(
+        container.library,
+        "NoteImageIndexer",
+        LECTURE,
+        "ImageIndex.fb",
+        image_fb_with_ids([((1, 12), "EXIT sign"), ((7, 7), "orphan")]),
+    )
+
+    assert note.block_pages == {(1, 12): 2}
+    assert appindex.read(note).images == [(2, "EXIT sign"), (0, "orphan")]

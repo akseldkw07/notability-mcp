@@ -81,7 +81,7 @@ async def test_read_note_lists_image_text_and_recordings(synced):
 
     body = text(note)
     assert "## Page 1\nharmonic conjugate" in body
-    assert "## Image text\nEXIT sign" in body
+    assert "## Image text (page not recorded)\nEXIT sign" in body
     assert "1 recording with a transcript: notability_get_transcript" in body
 
 

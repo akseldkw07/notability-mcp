@@ -29,6 +29,8 @@ class _Op(IntEnum):
     CREATE_INK = 15
     ADD_PATH_ELEMENTS = 16
     MODIFY_INK = 17
+    CREATE_BLOCK = 22
+    MODIFY_BLOCK = 23
     MODIFY_POSITIONS = 24
     DELETE_ENTITIES = 25
 
@@ -159,6 +161,9 @@ class Note:
     title: str | None
     pages: list[Page]
     text: str  # typed text, one block per text field
+    # page number of each block (image, web link, math...) by its id, e.g. to place the app's
+    # image OCR on its page
+    block_pages: dict[Id, int] = field(default_factory=dict)
 
 
 def read_ops(buf: bytes, ops_field: int) -> list[tuple[Id, int, _Table]]:
@@ -226,6 +231,7 @@ def build_note(note_id: str, ops: list[tuple[Id, int, _Table]]) -> Note:
     page_pos: dict[SeqId, SeqId] = {}  # page id -> its current node in the page sequence
     page_bg: dict[SeqId, dict] = {}
     inks: dict[Id, Ink] = {}
+    blocks: dict[Id, SeqId | None] = {}  # block id -> its page
     deleted: dict[Id | SeqId, bool] = {}
     chars: dict[Id | None, list[tuple[SeqId, SeqId | None, str]]] = defaultdict(list)
     removed: set[SeqId] = set()
@@ -281,9 +287,18 @@ def build_note(note_id: str, ops: list[tuple[Id, int, _Table]]) -> Note:
                         ink.width = p.scalar(7, "<f", ink.width)
                         if path := p.bytes(8):
                             ink.paths = [path]
+            case _Op.CREATE_BLOCK:
+                blocks[(site, ts)] = p.seq(2)
+            case _Op.MODIFY_BLOCK:
+                if moved := p.seq(2):
+                    for oid in p.ids(0):
+                        if oid in blocks:
+                            blocks[oid] = moved
             case _Op.MODIFY_POSITIONS:
                 for m in p.tables(0):
                     oid = m.id(0)
+                    if oid in blocks and (moved := m.seq(1)):
+                        blocks[oid] = moved
                     if oid is None or (ink := inks.get(oid)) is None:
                         continue
                     ink.page = m.seq(1) or ink.page
@@ -326,13 +341,17 @@ def build_note(note_id: str, ops: list[tuple[Id, int, _Table]]) -> Note:
         if not deleted.get(iid) and ink.page in by_id:
             by_id[ink.page].inks.append(ink)
 
-    blocks = []
+    texts = []
     for runs in chars.values():
         glyph = {node: ch for node, _, ch in runs}
         seq = linearize([(node, anchor) for node, anchor, _ in runs])
         if text := "".join(glyph[n] for n in seq if n not in removed).strip():
-            blocks.append(text)
-    return Note(id=note_id, title=title, pages=pages, text="\n\n".join(blocks))
+            texts.append(text)
+    numbers = {pg.id: pg.number for pg in pages}
+    block_pages = {
+        bid: numbers[pid] for bid, pid in blocks.items() if not deleted.get(bid) and pid in numbers
+    }
+    return Note(note_id, title, pages, "\n\n".join(texts), block_pages)
 
 
 type PathElement = tuple[int, list[tuple[float, float]], float | None]  # (kind, points, width)

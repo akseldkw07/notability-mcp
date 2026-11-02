@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Literal
 
 from notability_mcp import local
-from notability_mcp.bundle import Note, _Table
+from notability_mcp.bundle import Id, Note, _Table
 from notability_mcp.index import AppText
 from notability_mcp.store import Transcript
 
@@ -133,19 +133,29 @@ def handwriting(note: Note) -> dict[int, str] | None:
     return _read(path, fb if fmt == "fb" else plist)
 
 
-def image_text(note_id: str) -> list[str]:
-    """OCR of each image or photo in the note that has text."""
+def _plist_id(key: str) -> Id | None:
+    """The old format's keys look like "[Id] 3-1790000000"."""
+    site, _, ts = key.removeprefix("[Id] ").partition("-")
+    return (int(site), int(ts)) if site.isdigit() and ts.isdigit() else None
+
+
+def image_text(note_id: str) -> list[tuple[Id | None, str]]:
+    """OCR of each image or photo in the note that has text, with the image's id: the id of the
+    CreateBlock op that placed it (see Note.block_pages)."""
     if (picked := _pick("image", note_id)) is None:
         return []
     fmt, path = picked
 
-    def fb() -> list[str]:
-        return [(im.string(1) or "").strip() for im in _payload(path, "image").tables(0)]
+    def fb() -> list[tuple[Id | None, str]]:
+        return [
+            (im.id(0), (im.string(1) or "").strip()) for im in _payload(path, "image").tables(0)
+        ]
 
-    def plist() -> list[str]:
-        return [str(v).strip() for v in (_plist(path).get("imageAssetText") or {}).values()]
+    def plist() -> list[tuple[Id | None, str]]:
+        texts = _plist(path).get("imageAssetText") or {}
+        return [(_plist_id(str(k)), str(v).strip()) for k, v in texts.items()]
 
-    return [t for t in _read(path, fb if fmt == "fb" else plist) if t]
+    return [(i, t) for i, t in _read(path, fb if fmt == "fb" else plist) if t]
 
 
 def transcripts(note_id: str) -> list[Transcript]:
@@ -200,7 +210,10 @@ def read(note: Note, *, handwriting_text: bool = True) -> AppText:
     out = AppText()
     for name, fn in (
         ("handwriting", lambda: handwriting(note) if handwriting_text else None),
-        ("images", lambda: image_text(note.id)),
+        (
+            "images",
+            lambda: [(note.block_pages.get(i, 0) if i else 0, t) for i, t in image_text(note.id)],
+        ),
         ("transcripts", lambda: transcripts(note.id)),
     ):
         try:

@@ -115,3 +115,50 @@ def write(library: Path, indexer: str, note_id: str, name: str, data: bytes) -> 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     return path
+
+
+def _id(b: flatbuffers.Builder, site: int, ts: int) -> int:
+    b.Prep(4, 8)
+    b.PrependUint32(ts)
+    b.Pad(2)
+    b.PrependUint16(site)
+    return b.Offset()
+
+
+def change_log(ops: list[tuple[tuple[int, int], int, dict[int, SeqId]]]) -> bytes:
+    """A change log (ops in root field 0) of ops whose payloads hold only SeqId fields:
+    [((site, ts), payload tag, {field id: SeqId})]. Enough for CreatePage (tag 3, field 0: the
+    page it follows) and CreateBlock (tag 22, field 2: its page)."""
+    b = flatbuffers.Builder(256)
+    tables = []
+    for (site, ts), tag, fields in ops:
+        b.StartObject(max(fields, default=0) + 1)
+        for fid, seq in fields.items():
+            b.PrependStructSlot(fid, _seq_id(b, seq), 0)
+        payload = b.EndObject()
+        b.StartObject(6)
+        b.PrependStructSlot(0, _id(b, site, ts), 0)
+        b.PrependUint8Slot(4, tag, 0)
+        b.PrependUOffsetTRelativeSlot(5, payload, 0)
+        tables.append(b.EndObject())
+    vec = _vector(b, tables)
+    b.StartObject(1)
+    b.PrependUOffsetTRelativeSlot(0, vec, 0)
+    b.Finish(b.EndObject())
+    return bytes(b.Output())
+
+
+def image_fb_with_ids(images: list[tuple[tuple[int, int], str]], versions=(1, 2)) -> bytes:
+    """Like image_fb, with each image's id (the CreateBlock op's id)."""
+    b = flatbuffers.Builder(256)
+    tables = []
+    for (site, ts), text in images:
+        s = b.CreateString(text)
+        b.StartObject(4)
+        b.PrependStructSlot(0, _id(b, site, ts), 0)
+        b.PrependUOffsetTRelativeSlot(1, s, 0)
+        tables.append(b.EndObject())
+    vec = _vector(b, tables)
+    b.StartObject(2)
+    b.PrependUOffsetTRelativeSlot(0, vec, 0)
+    return _envelope(b, versions, b.EndObject())

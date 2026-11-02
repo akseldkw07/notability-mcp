@@ -63,6 +63,7 @@ def index(tmp_path, monkeypatch):
         [
             PageText(1, "handwriting", "Cauchy-Riemann equations", 1.0),
             PageText(2, "handwriting", "V homeria conjogate ot u in D", 0.4),
+            PageText(2, "image", "EXIT sign"),
         ],
     )
     con.close()
@@ -95,6 +96,7 @@ async def test_search_read_and_view_a_page(index):
     assert found.structured_content["notice"] is None
     assert "## Page 1\nCauchy-Riemann equations" in text(note)
     assert "## Page 2 (low OCR confidence" in text(note)
+    assert "### Image text\nEXIT sign" in text(note).split("## Page 2")[1]
     [block] = image.content
     assert isinstance(block, ImageContent) and block.mime_type == "image/png"
 
