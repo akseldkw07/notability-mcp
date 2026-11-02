@@ -40,6 +40,7 @@ DEFAULT_PAGE_SIZE = (612.0, 792.0)
 _MAX_PAGES_PER_OP = 10_000  # bounds a corrupt or hostile pageCount
 _ID, _SEQ = struct.Struct("<H2xI"), struct.Struct("<H2xII")
 _PAIR, _RGBA, _HASH = struct.Struct("<ff"), struct.Struct("<4B"), struct.Struct("<64s")
+_RECT = struct.Struct("<ffff")
 _UUID = struct.Struct("<QQ")
 
 
@@ -140,6 +141,24 @@ class Ink:
 
 
 @dataclass
+class Block:
+    """A placed object: an image (kind 1), or another kind this module doesn't draw."""
+
+    page: SeqId | None
+    kind: int
+    corner: int  # which corner `origin` anchors (0: top left)
+    origin: tuple[float, float]
+    size: tuple[float, float]  # on the page, in points
+    scale: tuple[float, float]
+    rotation: float
+    asset: str | None  # SHA-512 hex of the image
+    crop: tuple[float, float, float, float] | None  # x, y, width, height in image pixels
+
+
+IMAGE_BLOCK = 1
+
+
+@dataclass
 class PdfPage:
     asset: str  # SHA-512 hex of the PDF asset
     index: int  # 0-based page within that PDF
@@ -153,6 +172,7 @@ class Page:
     height: float
     pdf: PdfPage | None = None
     inks: list[Ink] = field(default_factory=list)
+    blocks: list[Block] = field(default_factory=list)
 
 
 @dataclass
@@ -231,7 +251,7 @@ def build_note(note_id: str, ops: list[tuple[Id, int, _Table]]) -> Note:
     page_pos: dict[SeqId, SeqId] = {}  # page id -> its current node in the page sequence
     page_bg: dict[SeqId, dict] = {}
     inks: dict[Id, Ink] = {}
-    blocks: dict[Id, SeqId | None] = {}  # block id -> its page
+    blocks: dict[Id, Block] = {}
     deleted: dict[Id | SeqId, bool] = {}
     chars: dict[Id | None, list[tuple[SeqId, SeqId | None, str]]] = defaultdict(list)
     removed: set[SeqId] = set()
@@ -288,17 +308,43 @@ def build_note(note_id: str, ops: list[tuple[Id, int, _Table]]) -> Note:
                         if path := p.bytes(8):
                             ink.paths = [path]
             case _Op.CREATE_BLOCK:
-                blocks[(site, ts)] = p.seq(2)
+                image = p.table(10)
+                meta = image.table(0) if image else None
+                blocks[(site, ts)] = Block(
+                    page=p.seq(2),
+                    kind=p.scalar(0, "<b", 0),
+                    corner=p.scalar(1, "<b", 0),
+                    origin=p.pair(3) or (0.0, 0.0),
+                    size=p.pair(6) or (0.0, 0.0),
+                    scale=p.pair(5) or (1.0, 1.0),
+                    rotation=p.scalar(4, "<f", 0.0),
+                    asset=meta.digest(0) if meta else None,
+                    crop=p._unpack(11, _RECT),  # type: ignore[arg-type]
+                )
             case _Op.MODIFY_BLOCK:
-                if moved := p.seq(2):
-                    for oid in p.ids(0):
-                        if oid in blocks:
-                            blocks[oid] = moved
+                for oid in p.ids(0):
+                    if (block := blocks.get(oid)) is None:
+                        continue
+                    block.page = p.seq(2) or block.page
+                    block.origin = p.pair(3) or block.origin
+                    block.size = p.pair(6) or block.size
+                    if rot := p.table(4):
+                        block.rotation = rot.scalar(0, "<f", 0.0)
+                    if (sc := p.table(5)) and (size := sc.pair(0)):
+                        block.scale = size
+                    if (crop := p.table(12)) and (rect := crop._unpack(0, _RECT)):
+                        block.crop = rect  # type: ignore[assignment]
             case _Op.MODIFY_POSITIONS:
                 for m in p.tables(0):
                     oid = m.id(0)
-                    if oid in blocks and (moved := m.seq(1)):
-                        blocks[oid] = moved
+                    if oid in blocks:
+                        block = blocks[oid]  # type: ignore[index]
+                        block.page = m.seq(1) or block.page
+                        block.origin = m.pair(2) or block.origin
+                        if rot := m.table(3):
+                            block.rotation = rot.scalar(0, "<f", 0.0)
+                        if (sc := m.table(4)) and (size := sc.pair(0)):
+                            block.scale = size
                     if oid is None or (ink := inks.get(oid)) is None:
                         continue
                     ink.page = m.seq(1) or ink.page
@@ -347,10 +393,11 @@ def build_note(note_id: str, ops: list[tuple[Id, int, _Table]]) -> Note:
         seq = linearize([(node, anchor) for node, anchor, _ in runs])
         if text := "".join(glyph[n] for n in seq if n not in removed).strip():
             texts.append(text)
-    numbers = {pg.id: pg.number for pg in pages}
-    block_pages = {
-        bid: numbers[pid] for bid, pid in blocks.items() if not deleted.get(bid) and pid in numbers
-    }
+    block_pages = {}
+    for bid, block in blocks.items():
+        if not deleted.get(bid) and block.page in by_id:
+            by_id[block.page].blocks.append(block)  # type: ignore[index]
+            block_pages[bid] = by_id[block.page].number  # type: ignore[index]
     return Note(note_id, title, pages, "\n\n".join(texts), block_pages)
 
 

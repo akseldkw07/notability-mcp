@@ -351,7 +351,7 @@ def get_page_image(
     """One note page as a PNG, to read handwriting, math and drawings exactly as written.
 
     Prefer this over OCR text whenever accuracy matters. Draws the ink over the page's PDF, if
-    any; shapes, pasted images and typed text are not shown.
+    any, and pasted images (local source); shapes and typed text are not shown.
     """
     con = _db()
     note = _note(con, note_id)
@@ -363,7 +363,16 @@ def get_page_image(
         raise ToolError(f"{note.title!r} has {len(pages)} pages; ask for 1-{len(pages)}.")
     target = pages[page - 1]
     background = store.asset(con, target.pdf.asset) if target.pdf else None
-    return Image(data=render_page(target, max_edge, background), format="png")
+    return Image(data=render_page(target, max_edge, background, _image), format="png")
+
+
+def _image(sha512: str) -> bytes | None:
+    """A pasted image's file from the Mac app's container; None where it isn't readable (no
+    Mac app, no Full Disk Access, or not downloaded): the page is drawn without it."""
+    try:
+        return local.asset(sha512)
+    except (OSError, ValueError):
+        return None
 
 
 def _clock(seconds: float) -> str:

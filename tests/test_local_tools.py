@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-from appindex_files import handwriting_fb, image_fb, recording_fb, write
+from appindex_files import change_log_with_image, handwriting_fb, image_fb, recording_fb, write
 from conftest import FIXTURES, LECTURE, Container
 from mcp import Client
 from mcp.server import MCPServer
@@ -185,3 +185,27 @@ async def test_open_note_is_opt_in(synced, monkeypatch):
 async def _default_tools():
     async with Client(mcp, raise_exceptions=True) as client:
         return (await client.list_tools()).tools
+
+
+@pytest.mark.anyio
+async def test_page_images_include_pasted_images(container: Container, tmp_path, monkeypatch):
+    png = io.BytesIO()
+    Image.new("RGB", (8, 8), (0, 0, 255)).save(png, "PNG")
+    sha = _attach(container, png.getvalue())
+    log = change_log_with_image(sha, origin=(100.0, 100.0), size=(200.0, 200.0))
+    (container.store / "notes" / LECTURE.upper()).write_bytes(log)
+    path = tmp_path / "index.db"
+    monkeypatch.setenv("NOTABILITY_MCP_DB", str(path))
+    con = store.connect(path)
+    sync_local(con, ocr="app")
+    con.close()
+
+    async with Client(mcp, raise_exceptions=True) as client:
+        image = await client.call_tool(
+            "notability_get_page_image", {"note_id": LECTURE, "page": 1, "max_edge": 792}
+        )
+
+    [block] = image.content
+    assert isinstance(block, ImageContent)
+    png_out = Image.open(io.BytesIO(base64.b64decode(block.data))).convert("RGB")
+    assert png_out.getpixel((200, 200)) == (0, 0, 255)
