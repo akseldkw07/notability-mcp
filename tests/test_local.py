@@ -1,7 +1,12 @@
+import hashlib
+import io
+import json
 import os
+import uuid
 
-from appindex_files import handwriting_fb, recording_fb, write
-from conftest import LECTURE, NOT_DOWNLOADED, TRASHED, Container
+from appindex_files import handwriting_fb, image_fb, recording_fb, write
+from conftest import FIXTURES, LECTURE, NOT_DOWNLOADED, TRASHED, Container
+from PIL import Image
 
 from notability_mcp import local, store
 from notability_mcp.bundle import decode_local
@@ -85,3 +90,48 @@ def test_sync_local_uses_the_apps_text_and_follows_its_reindexing(container: Con
     assert sync_local(con, ocr="app") == (1, 0)
     assert store.search(con, "laurent")[0]
     assert sync_local(con, ocr="app") == (0, 0)
+
+
+def _attach(container: Container, data: bytes | None, sha: str | None = None) -> str:
+    sha = sha or hashlib.sha512(data or b"").hexdigest()
+    if data is not None:
+        (container.store / "assets" / sha).write_bytes(data)
+    container.edit(
+        "INSERT INTO asset_note_associations VALUES (?, ?, 'user-1')",
+        sha,
+        uuid.UUID(LECTURE).bytes,
+    ).close()
+    return sha
+
+
+def test_sync_local_records_attachments_and_whether_they_are_on_disk(container, tmp_path):
+    pdf = _attach(container, (FIXTURES / "hello.pdf").read_bytes())
+    png = io.BytesIO()
+    Image.new("RGB", (4, 4)).save(png, "PNG")
+    image = _attach(container, png.getvalue())
+    missing = _attach(container, None, "ef" * 64)
+    con = store.connect(tmp_path / "index.db")
+
+    sync_local(con, ocr="app")
+
+    got = {a.sha512: a for a in store.note_attachments(con, LECTURE)}
+    assert (got[pdf].kind, got[pdf].mime, got[pdf].available) == ("pdf", "application/pdf", True)
+    assert (got[image].kind, got[image].size) == ("image", len(png.getvalue()))
+    assert (got[missing].kind, got[missing].available) == ("other", False)
+
+
+def test_sync_local_reports_index_formats_it_does_not_know(container, tmp_path):
+    write(
+        container.library,
+        "NoteImageIndexer",
+        LECTURE,
+        "ImageIndex.fb",
+        image_fb(["x"], versions=(9, 9)),
+    )
+    con = store.connect(tmp_path / "index.db")
+
+    assert sync_local(con, ocr="app") == (1, 0)  # the note still indexes, without image text
+
+    assert json.loads(store.get_meta(con, "drift") or "{}") == {
+        "unknown_index_formats": {"image 9.9": 1}
+    }

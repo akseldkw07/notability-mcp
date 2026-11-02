@@ -21,6 +21,10 @@ TOOLS = {
     "notability_list_notes",
     "notability_read_note",
     "notability_get_page_image",
+    "notability_get_transcript",
+    "notability_list_attachments",
+    "notability_get_attachment",
+    "notability_status",
 }
 
 

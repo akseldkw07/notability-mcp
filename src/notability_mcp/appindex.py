@@ -208,3 +208,20 @@ def read(note: Note, *, handwriting_text: bool = True) -> AppText:
         except (FormatError, OSError) as e:
             log.warning("%s: %s index unreadable: %s", note.id, name, e)
     return out
+
+
+def unknown_formats() -> dict[str, int]:
+    """Index files in formats this module doesn't know, counted by kind and version, e.g.
+    {"handwriting 5.6": 12}. Non-empty after an app update changed a format."""
+    out: dict[str, int] = {}
+    for kind, (folder, _, fb) in INDEXERS.items():
+        base = root() / folder
+        if not base.is_dir():
+            continue
+        for path in base.glob(f"*/{fb}"):
+            with path.open("rb") as f:
+                versions = envelope_versions(f.read(4096))
+            if versions != KNOWN_VERSIONS[kind]:
+                key = f"{kind} {versions[0]}.{versions[1]}" if versions else f"{kind} unreadable"
+                out[key] = out.get(key, 0) + 1
+    return out

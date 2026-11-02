@@ -1,5 +1,6 @@
 """Pull the library and changed notes from Notability into the local index."""
 
+import json
 import logging
 import sqlite3
 from collections.abc import Callable
@@ -78,7 +79,13 @@ def sync_local(con: sqlite3.Connection, ocr: OcrMode = "auto") -> tuple[int, int
     and are indexed by a later sync, once the app has them. Returns (indexed, failed)."""
     with local.snapshot() as app:
         folders, notes = local.read_library(app)
+        attachments = local.read_attachments(app)
     store.save_library(con, folders, notes)
+    store.save_attachments(con, attachments)
+    drift = appindex.unknown_formats()
+    store.set_meta(con, "drift", json.dumps({"unknown_index_formats": drift} if drift else {}))
+    for kind, count in drift.items():
+        log.warning("%d %s index files are in a format this version can't read", count, kind)
     # the two sources store different formats in notes.bundle, so switching source re-indexes
     # every note; so does switching OCR mode
     store.require_index_version(con, f"{INDEX_VERSION}/local{LOCAL_INDEX_VERSION}/{ocr}")

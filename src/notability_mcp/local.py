@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-from notability_mcp.store import Folder, NoteMeta
+from notability_mcp.store import Attachment, Folder, NoteMeta
 
 
 def library_dir() -> Path:
@@ -145,7 +145,58 @@ def change_log(note: str) -> bytes | None:
 
 def asset(sha512: str) -> bytes | None:
     """An attachment by SHA-512, or None if the app hasn't downloaded it."""
+    path = asset_path(sha512)
+    return path.read_bytes() if path.is_file() else None
+
+
+def sniff(head: bytes) -> tuple[str, str]:
+    """(kind, MIME type) from a file's first bytes; the app stores files without extensions."""
+    if head.startswith(b"%PDF-"):
+        return "pdf", "application/pdf"
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image", "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image", "image/jpeg"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image", "image/webp"
+    if head.startswith(b"GIF8"):
+        return "image", "image/gif"
+    if head[4:8] == b"ftyp":
+        brand = head[8:12]
+        if brand in (b"heic", b"heix", b"mif1"):
+            return "image", "image/heic"
+        if brand in (b"M4A ", b"M4B "):
+            return "audio", "audio/mp4"
+        return "video", "video/mp4"
+    if head.startswith(b"caff"):
+        return "audio", "audio/x-caf"
+    if head.startswith(b"ID3") or (len(head) > 1 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0):
+        return "audio", "audio/mpeg"
+    return "other", "application/octet-stream"
+
+
+def asset_path(sha512: str) -> Path:
     if len(sha512) != 128 or not all(c in "0123456789abcdef" for c in sha512):
         raise ValueError(f"not an asset hash: {sha512!r}")
-    path = data_dir() / "assets" / sha512
-    return path.read_bytes() if path.is_file() else None
+    return data_dir() / "assets" / sha512
+
+
+def read_attachments(con: sqlite3.Connection) -> dict[str, list[Attachment]]:
+    """Every note's attachments, with their type sniffed from the file when it's downloaded."""
+    out: dict[str, list[Attachment]] = {}
+    rows = con.execute("SELECT noteId, assetHash FROM asset_note_associations ORDER BY rowid")
+    for blob, sha in rows:
+        if not (isinstance(blob, bytes) and len(blob) == 16 and isinstance(sha, str)):
+            continue
+        try:
+            path = asset_path(sha.lower())
+        except ValueError:
+            continue
+        if path.is_file():
+            with path.open("rb") as f:
+                kind, mime = sniff(f.read(16))
+            item = Attachment(sha.lower(), kind, mime, path.stat().st_size, True)
+        else:
+            item = Attachment(sha.lower(), "other", "application/octet-stream", None, False)
+        out.setdefault(note_id(blob), []).append(item)
+    return out

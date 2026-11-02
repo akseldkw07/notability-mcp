@@ -42,6 +42,16 @@ CREATE TABLE IF NOT EXISTS transcripts (
     language TEXT NOT NULL,
     segments TEXT NOT NULL       -- JSON [[start, end, text], ...], seconds
 );
+-- Files attached to notes (local source): PDFs, images, audio. Only PDFs are copied into
+-- `assets`; the rest are read from the app's container when asked for.
+CREATE TABLE IF NOT EXISTS attachments (
+    note_id TEXT NOT NULL,
+    sha512 TEXT NOT NULL,
+    kind TEXT NOT NULL,          -- pdf, image, audio, video or other
+    mime TEXT NOT NULL,
+    size INTEGER,                -- NULL when the app hasn't downloaded the file
+    available INTEGER NOT NULL   -- 1 if the file is in the app's container
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS page_text USING fts5(
     title, text,
     note_id UNINDEXED, page UNINDEXED, source UNINDEXED, confidence UNINDEXED,
@@ -83,6 +93,15 @@ class Transcript:
     asset: str  # the audio attachment's SHA-512
     language: str
     segments: list[tuple[float, float, str]]  # (start, end, text), seconds from the start
+
+
+@dataclass
+class Attachment:
+    sha512: str
+    kind: str  # pdf, image, audio, video or other
+    mime: str
+    size: int | None
+    available: bool
 
 
 @dataclass
@@ -232,7 +251,13 @@ def match_score(words: list[str], text: str) -> float:
 
 
 def search(
-    con: sqlite3.Connection, query: str, *, limit: int = 10, offset: int = 0
+    con: sqlite3.Connection,
+    query: str,
+    *,
+    limit: int = 10,
+    offset: int = 0,
+    note_ids: set[str] | None = None,
+    sources: set[str] | None = None,
 ) -> tuple[list[Hit], bool]:
     """Best-matching pages and whether more results exist past this page.
 
@@ -240,10 +265,15 @@ def search(
     are re-ranked by match_score and pages below WEAK_MATCH are dropped.
     """
     words = _words(query)
+    where, args = "page_text MATCH ?", [fuzzy_query(query)]
+    for column, values in (("note_id", note_ids), ("source", sources)):
+        if values is not None:
+            where += f" AND {column} IN ({','.join('?' * len(values))})"
+            args += sorted(values)
     rows = con.execute(
         "SELECT note_id, title, page, source, text, snippet(page_text, 1, '«', '»', '…', 48)"
-        " FROM page_text WHERE page_text MATCH ? ORDER BY bm25(page_text, 2.0, 1.0) LIMIT ?",
-        (fuzzy_query(query), CANDIDATES),
+        f" FROM page_text WHERE {where} ORDER BY bm25(page_text, 2.0, 1.0) LIMIT ?",
+        (*args, CANDIDATES),
     ).fetchall()
     scored = [
         Hit(n, t, p, s, snip, match_score(words, f"{t}\n{text}")) for n, t, p, s, text, snip in rows
@@ -332,6 +362,29 @@ def note_transcripts(con: sqlite3.Connection, note_id: str) -> list[Transcript]:
         Transcript(a, lang, [(start, end, text) for start, end, text in json.loads(segs)])
         for a, lang, segs in rows
     ]
+
+
+def save_attachments(con: sqlite3.Connection, rows: dict[str, list[Attachment]]) -> None:
+    """Replace every note's attachment list."""
+    with con:
+        con.execute("DELETE FROM attachments")
+        con.executemany(
+            "INSERT INTO attachments VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (note_id, a.sha512, a.kind, a.mime, a.size, int(a.available))
+                for note_id, items in rows.items()
+                for a in items
+            ],
+        )
+
+
+def note_attachments(con: sqlite3.Connection, note_id: str) -> list[Attachment]:
+    rows = con.execute(
+        "SELECT sha512, kind, mime, size, available FROM attachments WHERE note_id = ?"
+        " ORDER BY rowid",
+        (note_id,),
+    )
+    return [Attachment(sha, k, m, size, bool(av)) for sha, k, m, size, av in rows]
 
 
 def asset(con: sqlite3.Connection, sha512: str) -> bytes | None:
