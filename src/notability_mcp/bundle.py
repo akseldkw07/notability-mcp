@@ -183,6 +183,17 @@ class Shape:
 
 
 @dataclass
+class Paper:
+    """A page's paper (PageBackground.paper): its pattern, spacing and colour."""
+
+    flair: int | None = None  # 0 lines, 1 dots, 2 grid; None: blank
+    spacing: float | None = None  # points between lines or dots
+    bleeds: bool = True  # pattern runs to the page edges, or stops at the margins
+    color: tuple[int, int, int, int] | None = None
+    legacy: int | None = None  # legacyPaperIndex: 13 is plain white paper
+
+
+@dataclass
 class PdfPage:
     asset: str  # SHA-512 hex of the PDF asset
     index: int  # 0-based page within that PDF
@@ -195,6 +206,7 @@ class Page:
     width: float
     height: float
     pdf: PdfPage | None = None
+    paper: Paper | None = None
     inks: list[Ink] = field(default_factory=list)
     blocks: list[Block] = field(default_factory=list)
     shapes: list[Shape] = field(default_factory=list)
@@ -264,9 +276,23 @@ def _background(bg: _Table | None) -> dict:
     out: dict = {}
     if size := bg.pair(3):
         out["size"] = size
+    if paper := bg.table(0):
+        out["paper"] = Paper(
+            flair=paper.scalar(0, "<b", None),
+            spacing=paper.scalar(1, "<f", None),
+            bleeds=paper.scalar(2, "<?", True),
+            color=paper.rgba(4),
+            legacy=paper.scalar(5, "<B", None),
+        )
     if (pdf := bg.table(1)) and (meta := pdf.table(0)) and (digest := meta.digest(0)):
         out["pdf"] = (digest, pdf.scalar(4, "<I", 0), pdf.pairs(5))
     return out
+
+
+def last_page_with_content(pages: list[Page]) -> int:
+    """Number of the last page with ink, shapes, images or a PDF page (at least 1). Notes
+    often end with an empty page the app adds as you write; its own export leaves it out."""
+    return max((p.number for p in pages if p.inks or p.shapes or p.blocks or p.pdf), default=1)
 
 
 def _definition(
@@ -453,6 +479,8 @@ def build_note(note_id: str, ops: list[tuple[Id, int, _Table]]) -> Note:
     if not order:
         order = [(0, 0, 0)]  # a note with no CreatePage ops has one implicit page
     pages = [_page(i + 1, pid, page_bg.get(pid) or note_bg) for i, pid in enumerate(order)]
+    for page in pages:
+        page.paper = page.paper or note_bg.get("paper")  # a page's own background may set none
 
     by_id = {pg.id: pg for pg in pages}
     for iid, ink in inks.items():
@@ -510,7 +538,7 @@ def decode_path(b: bytes) -> list[PathElement]:
 
 
 def _page(number: int, pid: SeqId, bg: dict) -> Page:
-    page = Page(number, pid, *bg.get("size", DEFAULT_PAGE_SIZE))
+    page = Page(number, pid, *bg.get("size", DEFAULT_PAGE_SIZE), paper=bg.get("paper"))
     if pdf := bg.get("pdf"):
         digest, offset, crop_boxes = pdf
         page.pdf = PdfPage(digest, offset + pid[2])

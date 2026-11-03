@@ -75,3 +75,22 @@ def test_shapes_are_drawn_and_highlighter_shapes_tint_the_paper():
     r, g, b = px((200, 525))  # inside the highlighter rectangle
     assert r == g == 255 and b < 200
     assert px((200, 700)) == (255, 255, 255)  # the deleted line
+
+
+def test_paper_is_cream_with_a_centred_grid_and_legacy_13_is_plain_white():
+    from notability_mcp.bundle import Paper
+
+    # like a real note: 792 x 612, a 36 pt grid, no colour set
+    page = Page(1, (1, 1, 0), 792, 612, paper=Paper(flair=2, spacing=36.0, legacy=1))
+    img = Image.open(io.BytesIO(render_page(page, max_edge=792))).convert("RGB")
+
+    def px(xy: tuple[int, int]) -> tuple[int, ...]:
+        return cast(tuple[int, ...], img.getpixel(xy))
+
+    assert px((30, 50)) == (251, 248, 242)  # paper, inside a cell
+    assert max(px((18, 50))) < 230 and max(px((30, 36))) < 230  # a vertical and a horizontal line
+    assert px((36, 50)) == (251, 248, 242)  # no line at x = 36: the page centre is mid-cell
+
+    page.paper = Paper(flair=2, spacing=36.0, legacy=13)
+    white = Image.open(io.BytesIO(render_page(page, max_edge=792))).convert("RGB")
+    assert white.getpixel((30, 50)) == (255, 255, 255)

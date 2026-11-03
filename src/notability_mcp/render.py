@@ -8,12 +8,24 @@ from collections.abc import Callable, Iterator
 from PIL import Image, ImageChops, ImageDraw
 
 from notability_mcp import bundle, pdf
-from notability_mcp.bundle import HIGHLIGHTER, IMAGE_BLOCK, Block, Ink, Page, Shape, decode_path
+from notability_mcp.bundle import (
+    HIGHLIGHTER,
+    IMAGE_BLOCK,
+    Block,
+    Ink,
+    Page,
+    Paper,
+    Shape,
+    decode_path,
+)
 
 type Point = tuple[float, float]
 
 MAX_EDGE = 1568  # Claude downscales images whose long edge is larger
 _SUPERSAMPLE = 2  # draw at 2x, then downscale: cheap antialiasing
+PAPER_TINT = (251, 248, 242)  # the app's paper texture, averaged
+PAPER_LINE = (194, 192, 183)
+PAPER_LINE_WIDTH = 0.5
 
 
 def render_page(
@@ -46,6 +58,8 @@ def render_image(
     img = Image.new("RGB", canvas, "white")
     if background and page.pdf and (drawn := pdf.render(background, page.pdf.index, canvas)):
         img.paste(drawn)
+    elif page.paper:
+        _draw_paper(img, page.paper, s)
     if image:
         for block in page.blocks:
             _paste_image(img, block, image, s)
@@ -57,6 +71,42 @@ def render_image(
         img = ImageChops.multiply(img, layer)
     _draw(img, [m for m in marks if m.tool != HIGHLIGHTER], s)
     return img.resize(size, Image.Resampling.LANCZOS)
+
+
+def _draw_paper(img: Image.Image, paper: Paper, s: float) -> None:
+    """Fill the paper's colour and draw its lines, dots or grid, as measured on the app's own
+    PDF exports: the paper is a cream texture (about PAPER_TINT) tinted by its colour, except
+    legacy paper 13, which is plain white; the pattern is laid out so the page's centre falls
+    mid-cell."""
+    if paper.legacy != 13:
+        r, g, b, _ = paper.color or (255, 255, 255, 255)
+        tint = tuple(c * t // 255 for c, t in zip((r, g, b), PAPER_TINT, strict=True))
+        img.paste(tint, (0, 0, *img.size))
+    if paper.flair not in (0, 1, 2) or not paper.spacing or paper.spacing <= 1:
+        return
+    w, h = img.size
+    step = paper.spacing * s
+    inset = 0.0 if paper.bleeds else 36 * s  # default margins: the Margins table isn't read
+
+    def ticks(length: float) -> list[float]:
+        first = (length / 2 - step / 2) % step
+        return [first + i * step for i in range(int((length - first) / step) + 1)]
+
+    xs = [x for x in ticks(w) if inset <= x <= w - inset]
+    ys = [y for y in ticks(h) if inset <= y <= h - inset]
+    draw = ImageDraw.Draw(img)
+    width = max(1, round(PAPER_LINE_WIDTH * s))
+    if paper.flair == 1:
+        r = max(1.0, 0.8 * s)
+        for x in xs:
+            for y in ys:
+                draw.ellipse((x - r, y - r, x + r, y + r), fill=PAPER_LINE)
+        return
+    for y in ys:
+        draw.line([(inset, y), (w - inset, y)], fill=PAPER_LINE, width=width)
+    if paper.flair == 2:
+        for x in xs:
+            draw.line([(x, inset), (x, h - inset)], fill=PAPER_LINE, width=width)
 
 
 def _draw(img: Image.Image, marks: list[Ink | Shape], s: float) -> None:

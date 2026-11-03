@@ -20,7 +20,7 @@ from PIL import Image as PILImage
 from pydantic import BaseModel, Field
 
 from notability_mcp import local, pdf, store
-from notability_mcp.bundle import Note, decode_bundle, decode_local
+from notability_mcp.bundle import Note, decode_bundle, decode_local, last_page_with_content
 from notability_mcp.render import MAX_EDGE, render_image, render_page
 from notability_mcp.untrusted import create_fence, neutralize_text
 
@@ -685,7 +685,13 @@ def export_note_pdf(
             "the note. Must be inside the user's allowed export folders."
         ),
     ] = None,
-    pages: Annotated[str | None, Field(description="e.g. '1-3,7'; default: every page")] = None,
+    pages: Annotated[
+        str | None,
+        Field(
+            description="e.g. '1-3,7'; default: every page, less the empty ones at the end "
+            "(like the app's export)"
+        ),
+    ] = None,
     overwrite: Annotated[
         bool, Field(description="Replace an existing file; by default ' (2)' is added")
     ] = False,
@@ -701,7 +707,12 @@ def export_note_pdf(
     if not bundle:
         raise ToolError("This note's content isn't synced yet. Ask the user to run sync.")
     decoded = _decode(con, note_id, bundle).pages
-    numbers = _page_numbers(pages, len(decoded))
+    # like the app's own export, leave out the empty pages a note ends with
+    numbers = (
+        _page_numbers(pages, len(decoded))
+        if pages
+        else list(range(1, last_page_with_content(decoded) + 1))
+    )
     target = _export_path(path, note.title, overwrite)
     target.parent.mkdir(parents=True, exist_ok=True)
 

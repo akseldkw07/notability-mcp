@@ -81,3 +81,16 @@ def test_shapes_land_on_their_page_with_moves_and_deletes_applied():
     assert ellipse.color == (255, 0, 0, 255)
     assert (rect.kind, rect.tool, rect.fill) == (POLYGON, HIGHLIGHTER, (255, 255, 0, 102))
     assert len(rect.points) == 4
+
+
+def test_the_apps_trailing_empty_pages_are_not_content():
+    from notability_mcp.bundle import Page, Shape, last_page_with_content
+
+    def page(n: int, **kw) -> Page:
+        return Page(n, (1, 1, n), 612, 792, **kw)
+
+    shape = Shape(None, 1, (0, 0), (1, 1), 0, [], (0, 0), (0, 0, 0, 255), 1, None, 0, 1)
+    pdf = PdfPage("ab" * 64, 0)
+    assert last_page_with_content([page(1, shapes=[shape]), page(2), page(3)]) == 1
+    assert last_page_with_content([page(1), page(2, pdf=pdf), page(3)]) == 2
+    assert last_page_with_content([page(1), page(2)]) == 1  # an empty note still has a page
