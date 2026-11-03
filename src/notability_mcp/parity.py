@@ -80,7 +80,7 @@ def _render(page: pdfium.PdfPage, size: tuple[int, int] | None = None) -> Image.
     """The page at DPI, area-averaged down from 3x: drawn straight at a low resolution, a
     vector hairline still takes a whole pixel, so the app's vector pages would look darker
     than our raster ones."""
-    big = page.render(scale=3 * DPI / 72).to_pil().convert("RGB")  # pyright: ignore[reportArgumentType]
+    big = page.render(scale=3 * DPI / 72).to_pil().convert("RGB")  # pyright: ignore[reportArgumentType]  # fmt: skip
     w, h = page.get_size()
     return big.resize(size or (round(w * DPI / 72), round(h * DPI / 72)), Image.Resampling.BOX)
 

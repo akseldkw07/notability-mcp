@@ -159,7 +159,7 @@ def baseline_depth(font: Font) -> float:
         a, b = BASELINE_DEPTH[font.family]
         return a * font.size + b
     metrics = _truetype(font, 1000).font
-    gap = metrics.height - metrics.ascent - metrics.descent  # pyright: ignore[reportAttributeAccessIssue]
+    gap = metrics.height - metrics.ascent - metrics.descent  # pyright: ignore[reportAttributeAccessIssue]  # fmt: skip
     return (metrics.ascent + gap) / 1000 * font.size  # pyright: ignore[reportAttributeAccessIssue]
 
 

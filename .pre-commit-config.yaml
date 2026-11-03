@@ -11,9 +11,12 @@ repos:
       - id: conventional-pre-commit
         stages: [commit-msg]
   # >>> mcp-utils shared hooks (precommit/fork-block.yaml; sync: scripts/sync-precommit.mjs) >>>
-# Shared hooks for forks whose upstream ships its own pre-commit config (e.g. notability-mcp).
+# Shared hooks for forks whose upstream ships its own hooks (notability-mcp: a pre-commit
+# config; mirroir-mcp: .githooks, so its config holds only this block).
 # scripts/sync-precommit.mjs appends this between markers at the end of the fork's `repos:`
 # list. Each hook here must match precommit/mcp.yaml exactly (test/precommit.test.ts checks).
+# black runs in every repo the user owns (awalters' config, mcp.yaml): a fork whose upstream
+# formats with ruff sets [tool.black] line-length to match ruff's, so the two agree.
   - repo: local
     hooks:
       - id: prevent-main-push
@@ -52,4 +55,10 @@ repos:
         # concurrent `npx pyright` runs corrupt the shared npm cache (ENOTEMPTY/ENOENT).
         require_serial: true
         stages: [pre-commit]
+  - repo: https://github.com/psf/black
+    rev: 26.3.1
+    hooks:
+      - id: black
+        name: black
+        args: [--safe, --quiet]
   # <<< mcp-utils shared hooks <<<

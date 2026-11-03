@@ -55,6 +55,13 @@ extend-exclude = ["src/notability_mcp/untrusted.py"]  # vendored verbatim from m
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
+# black runs too (the shared hooks, mcp-utils fork-block.yaml): same line length as ruff, and
+# force-exclude because pre-commit passes file names to black explicitly.
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+force-exclude = "src/notability_mcp/untrusted\\.py"
+
 [tool.pyright]
 include = ["src", "tests"]
 
