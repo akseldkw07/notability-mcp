@@ -24,7 +24,9 @@ def test_highlighter_tints_white_paper_and_leaves_dark_pdf_text_dark(ink_note: N
     on_paper = Image.open(io.BytesIO(render_page(page, max_edge=792)))
 
     page.pdf = PdfPage("ab" * 64, 0)
-    monkeypatch.setattr(pdf, "render", lambda data, index, size: Image.new("RGB", size, "black"))
+    monkeypatch.setattr(
+        pdf, "render", lambda data, index, size, **_: Image.new("RGB", size, "black")
+    )
     on_text = Image.open(io.BytesIO(render_page(page, max_edge=792, background=b"pdf")))
 
     paper = on_paper.convert("RGB").tobytes()

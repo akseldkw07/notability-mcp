@@ -18,6 +18,8 @@ from notability_mcp.bundle import (
     Shape,
     decode_path,
 )
+from notability_mcp.text import Span, rulings
+from notability_mcp.text import draw as draw_text
 
 type Point = tuple[float, float]
 
@@ -33,14 +35,14 @@ def render_page(
     max_edge: int = MAX_EDGE,
     background: bytes | None = None,
     image: Callable[[str], bytes | None] | None = None,
+    text: list[Span] | None = None,
 ) -> bytes:
-    """PNG of the page's ink, long edge `max_edge` px, over `background` (the page's PDF) or white,
-    with pasted images when `image` (SHA-512 -> file bytes) is given.
-
-    Typed text is not drawn.
+    """PNG of the page's ink and shapes, long edge `max_edge` px, over `background` (the page's
+    PDF) or its paper, with pasted images when `image` (SHA-512 -> file bytes) is given and
+    typed text (`text`, from text.page_spans).
     """
     out = io.BytesIO()
-    render_image(page, max_edge, background, image).save(out, "PNG", optimize=True)
+    render_image(page, max_edge, background, image, text).save(out, "PNG", optimize=True)
     return out.getvalue()
 
 
@@ -49,6 +51,7 @@ def render_image(
     max_edge: int = MAX_EDGE,
     background: bytes | None = None,
     image: Callable[[str], bytes | None] | None = None,
+    text: list[Span] | None = None,
 ) -> Image.Image:
     """The page drawn as in render_page, as an RGB image."""
     k = max_edge / max(page.width, page.height)
@@ -56,13 +59,18 @@ def render_image(
     s = k * _SUPERSAMPLE
     canvas = (size[0] * _SUPERSAMPLE, size[1] * _SUPERSAMPLE)
     img = Image.new("RGB", canvas, "white")
-    if background and page.pdf and (drawn := pdf.render(background, page.pdf.index, canvas)):
-        img.paste(drawn)
-    elif page.paper:
-        _draw_paper(img, page.paper, s)
+    drawn = None
+    if background and page.pdf:
+        drawn = pdf.render(background, page.pdf.index, canvas, transparent=True)
+    if page.paper:  # under a PDF page too: the app shows its paper through the PDF
+        _draw_paper(img, page.paper, s, pattern=drawn is None)
+    if drawn:
+        img.paste(drawn, (0, 0), drawn if drawn.mode == "RGBA" else None)
     if image:
         for block in page.blocks:
             _paste_image(img, block, image, s)
+    if text:
+        draw_text(ImageDraw.Draw(img), text, s)
     marks = [*page.inks, *page.shapes]
     if highlights := [m for m in marks if m.tool == HIGHLIGHTER]:
         # multiplied in, like a real highlighter: the PDF text under it stays legible
@@ -73,24 +81,24 @@ def render_image(
     return img.resize(size, Image.Resampling.LANCZOS)
 
 
-def _draw_paper(img: Image.Image, paper: Paper, s: float) -> None:
-    """Fill the paper's colour and draw its lines, dots or grid, as measured on the app's own
-    PDF exports: the paper is a cream texture (about PAPER_TINT) tinted by its colour, except
-    legacy paper 13, which is plain white; the pattern is laid out so the page's centre falls
-    mid-cell."""
+def _draw_paper(img: Image.Image, paper: Paper, s: float, pattern: bool = True) -> None:
+    """Fill the paper's colour and (with `pattern`) draw its lines, dots or grid, as measured
+    on the app's own PDF exports: the paper is a cream texture (about PAPER_TINT) tinted by its
+    colour, except legacy paper 13, which is plain white; the pattern is laid out so the
+    page's centre falls mid-cell."""
     if paper.legacy != 13:
         r, g, b, _ = paper.color or (255, 255, 255, 255)
         tint = tuple(c * t // 255 for c, t in zip((r, g, b), PAPER_TINT, strict=True))
         img.paste(tint, (0, 0, *img.size))
+    if not pattern:
+        return
     if paper.flair not in (0, 1, 2) or not paper.spacing or paper.spacing <= 1:
         return
     w, h = img.size
-    step = paper.spacing * s
-    inset = 0.0 if paper.bleeds else 36 * s  # default margins: the Margins table isn't read
+    inset = 0.0 if paper.bleeds else 36 * s  # default margins
 
     def ticks(length: float) -> list[float]:
-        first = (length / 2 - step / 2) % step
-        return [first + i * step for i in range(int((length - first) / step) + 1)]
+        return [t * s for t in rulings(length / s, paper.spacing or 0.0)]
 
     xs = [x for x in ticks(w) if inset <= x <= w - inset]
     ys = [y for y in ticks(h) if inset <= y <= h - inset]

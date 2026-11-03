@@ -8,7 +8,7 @@ https://github.com/Zpankz/notability-cli/blob/d49dc45/crates/nb-protocol/schema/
 import struct
 from collections import defaultdict
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import IntEnum
 
 type Id = tuple[int, int]  # (site, timestamp)
@@ -26,6 +26,9 @@ class _Op(IntEnum):
     REMOVE_CHAR = 9
     REMOVE_CHARS = 10
     REVIVE_CHARS = 11
+    MODIFY_STYLE = 12
+    MODIFY_PARAGRAPH_STYLE = 13
+    CLEAR_STYLE = 14
     CREATE_INK = 15
     ADD_PATH_ELEMENTS = 16
     MODIFY_INK = 17
@@ -44,6 +47,7 @@ _ID, _SEQ = struct.Struct("<H2xI"), struct.Struct("<H2xII")
 _PAIR, _RGBA, _HASH = struct.Struct("<ff"), struct.Struct("<4B"), struct.Struct("<64s")
 _RECT = struct.Struct("<ffff")
 _UUID = struct.Struct("<QQ")
+_BOUNDARY = struct.Struct("<H2xIIb3x")  # SeqId, then BoundaryType
 
 
 class _Table:
@@ -155,9 +159,34 @@ class Block:
     rotation: float
     asset: str | None  # SHA-512 hex of the image
     crop: tuple[float, float, float, float] | None  # x, y, width, height in image pixels
+    text: list["Run"] = field(default_factory=list)  # a text box's text
 
 
-IMAGE_BLOCK = 1
+TEXT_BLOCK, IMAGE_BLOCK = 0, 1
+DEFAULT_FONT = ("Helvetica Neue", 14.0)
+
+
+@dataclass(frozen=True)
+class Style:
+    """Style of typed text: the character's, and its paragraph's (indent, align); None means
+    the note's default."""
+
+    family: str | None = None
+    size: float | None = None
+    bold: bool = False
+    italic: bool = False
+    underline: bool = False
+    strikethrough: bool = False
+    color: tuple[int, int, int, int] | None = None
+    indent: int = 0  # paragraph indent level
+    align: int = 0  # paragraph alignment: 0 natural, 1 left, 2 centre, 3 right
+
+
+@dataclass
+class Run:
+    text: str
+    style: Style
+
 
 # CreateShape.definition types (DefinitionUnion member index + 1)
 LINE, POLYGON, ELLIPSE = 1, 2, 3
@@ -207,6 +236,7 @@ class Page:
     height: float
     pdf: PdfPage | None = None
     paper: Paper | None = None
+    margins: tuple[float, float, float, float] = (36.0, 36.0, 36.0, 36.0)  # top bottom left right
     inks: list[Ink] = field(default_factory=list)
     blocks: list[Block] = field(default_factory=list)
     shapes: list[Shape] = field(default_factory=list)
@@ -221,6 +251,9 @@ class Note:
     # page number of each block (image, web link, math...) by its id, e.g. to place the app's
     # image OCR on its page
     block_pages: dict[Id, int] = field(default_factory=dict)
+    body: list[Run] = field(default_factory=list)  # the body text, flowed from page 1
+    font: tuple[str, float] = DEFAULT_FONT  # the note's default family and size
+    align_to_lines: bool = False  # body text sits on the paper's lines
 
 
 def read_ops(buf: bytes, ops_field: int) -> list[tuple[Id, int, _Table]]:
@@ -284,15 +317,115 @@ def _background(bg: _Table | None) -> dict:
             color=paper.rgba(4),
             legacy=paper.scalar(5, "<B", None),
         )
+    if margins := bg._unpack(4, _RECT):
+        out["margins"] = margins
     if (pdf := bg.table(1)) and (meta := pdf.table(0)) and (digest := meta.digest(0)):
         out["pdf"] = (digest, pdf.scalar(4, "<I", 0), pdf.pairs(5))
     return out
 
 
+def _styled_runs(
+    seq: list[SeqId],
+    glyph: dict[SeqId, str],
+    removed: set[SeqId],
+    styling: list[tuple[int, "_Table"]],
+) -> list[Run]:
+    """A text field's live characters as runs of one style, with ModifyStyle / ClearStyle ops
+    applied in order over the ranges their boundaries mark (boundaries may sit on removed
+    characters, so positions are taken in the full sequence)."""
+    index = {node: i for i, node in enumerate(seq)}
+    styles = [Style()] * len(seq)
+
+    def position(b: tuple | None, default: int) -> int:
+        if b is None:
+            return default
+        site, ts, i, kind = b
+        if kind == 2:  # start of document
+            return 0
+        if kind == 3:  # end of document
+            return len(seq)
+        at = index.get((site, ts, i))
+        return default if at is None else at + (kind == 1)  # 1: after the character
+
+    for op, p in styling:
+        if op == _Op.MODIFY_PARAGRAPH_STYLE:
+            ends = [index.get(at) if (at := p.seq(f)) else None for f in (0, 1)]
+            start, end = _paragraphs(seq, glyph, *ends)
+            for i in range(start, end):
+                styles[i] = _repara(styles[i], p)
+            continue
+        start = position(p._unpack(0, _BOUNDARY), 0)
+        end = position(p._unpack(1, _BOUNDARY), len(seq))
+        for i in range(start, min(end, len(seq))):
+            if op == _Op.CLEAR_STYLE:  # paragraph attributes stay unless asked
+                para = (0, 0) if p.scalar(2, "<?", False) else (styles[i].indent, styles[i].align)
+                styles[i] = Style(indent=para[0], align=para[1])
+            else:
+                styles[i] = _restyle(styles[i], p)
+    runs: list[Run] = []
+    for node, style in zip(seq, styles, strict=True):
+        if node in removed:
+            continue
+        if runs and runs[-1].style == style:
+            runs[-1].text += glyph[node]
+        else:
+            runs.append(Run(glyph[node], style))
+    return runs
+
+
+def _paragraphs(
+    seq: list[SeqId], glyph: dict[SeqId, str], start: int | None, end: int | None
+) -> tuple[int, int]:
+    """The whole paragraphs from position `start` to `end` (inclusive), as a range: back to
+    the character after the previous newline, on to the next newline (included)."""
+    first = 0 if start is None else start
+    last = len(seq) - 1 if end is None else end
+    while first > 0 and glyph[seq[first - 1]] != "\n":
+        first -= 1
+    while last < len(seq) - 1 and glyph[seq[last]] != "\n":
+        last += 1
+    return first, last + 1
+
+
+def _repara(style: Style, p: "_Table") -> Style:
+    """ModifyParagraphStyle's indent level (field 2) and alignment (field 3) over `style`."""
+    changes: dict = {}
+    if t := p.table(2):
+        changes["indent"] = t.scalar(0, "<B", 0)
+    if t := p.table(3):
+        changes["align"] = t.scalar(0, "<b", 0)
+    return replace(style, **changes) if changes else style
+
+
+def _restyle(style: Style, p: "_Table") -> Style:
+    """ModifyStyle's Set* fields over `style` (each Set* table holds its value in field 0)."""
+    changes: dict = {}
+    for fid, name in ((3, "bold"), (4, "italic"), (5, "underline"), (12, "strikethrough")):
+        if t := p.table(fid):
+            changes[name] = t.scalar(0, "<?", False)
+    if t := p.table(7):
+        changes["family"] = t.string(0)
+    if t := p.table(8):
+        changes["size"] = t.scalar(0, "<f", None)
+    if t := p.table(9):
+        changes["color"] = t.rgba(0)
+    return replace(style, **changes) if changes else style
+
+
 def last_page_with_content(pages: list[Page]) -> int:
-    """Number of the last page with ink, shapes, images or a PDF page (at least 1). Notes
-    often end with an empty page the app adds as you write; its own export leaves it out."""
-    return max((p.number for p in pages if p.inks or p.shapes or p.blocks or p.pdf), default=1)
+    """Number of the last page with ink, shapes, images or an imported PDF page (at least 1).
+    Notes often end with an empty page the app adds as you write; its own export leaves it
+    out. Such a page may repeat a template PDF page, so a PDF page only counts the first time
+    it appears in the note."""
+    seen: set[tuple[str, int]] = set()
+    last = 1
+    for p in pages:
+        new_pdf = p.pdf is not None and (p.pdf.asset, p.pdf.index) not in seen
+        if p.pdf:
+            seen.add((p.pdf.asset, p.pdf.index))
+        if p.inks or p.shapes or p.blocks or new_pdf:
+            last = p.number
+    return last
 
 
 def _definition(
@@ -323,6 +456,9 @@ def build_note(note_id: str, ops: list[tuple[Id, int, _Table]]) -> Note:
     deleted: dict[Id | SeqId, bool] = {}
     chars: dict[Id | None, list[tuple[SeqId, SeqId | None, str]]] = defaultdict(list)
     removed: set[SeqId] = set()
+    font = DEFAULT_FONT
+    align_to_lines = False
+    styling: dict[Id | None, list[tuple[int, _Table]]] = defaultdict(list)
 
     for (site, ts), kind, p in ops:
         match kind:
@@ -331,6 +467,14 @@ def build_note(note_id: str, ops: list[tuple[Id, int, _Table]]) -> Note:
                     title = s
                 if (t := p.table(1)) and (bg := t.table(0)):
                     note_bg = _background(bg)
+                if family := p.string(4):
+                    font = (family, font[1])
+                if (size := p.scalar(5, "<f", 0.0)) > 0:
+                    font = (font[0], size)
+                align_to_lines = p.scalar(3, "<?", align_to_lines)
+            case _Op.MODIFY_STYLE | _Op.CLEAR_STYLE | _Op.MODIFY_PARAGRAPH_STYLE:
+                field_of = {_Op.MODIFY_STYLE: 2, _Op.CLEAR_STYLE: 3, _Op.MODIFY_PARAGRAPH_STYLE: 7}
+                styling[p.id(field_of[kind])].append((kind, p))
             case _Op.CREATE_PAGE:
                 prev, bg = p.seq(0), _background(p.table(1))
                 for i in range(min(p.scalar(2, "<I", 0), _MAX_PAGES_PER_OP) or 1):
@@ -491,17 +635,24 @@ def build_note(note_id: str, ops: list[tuple[Id, int, _Table]]) -> Note:
             by_id[shape.page].shapes.append(shape)
 
     texts = []
-    for runs in chars.values():
+    styled: dict[Id | None, list[Run]] = {}
+    for fid, runs in chars.items():
         glyph = {node: ch for node, _, ch in runs}
         seq = linearize([(node, anchor) for node, anchor, _ in runs])
         if text := "".join(glyph[n] for n in seq if n not in removed).strip():
             texts.append(text)
+        styled[fid] = _styled_runs(seq, glyph, removed, styling.get(fid, []))
+    for bid, block in blocks.items():
+        if block.kind == TEXT_BLOCK:
+            block.text = styled.get(bid, [])
     block_pages = {}
     for bid, block in blocks.items():
         if not deleted.get(bid) and block.page in by_id:
             by_id[block.page].blocks.append(block)  # type: ignore[index]
             block_pages[bid] = by_id[block.page].number  # type: ignore[index]
-    return Note(note_id, title, pages, "\n\n".join(texts), block_pages)
+    body = styled.get(None, [])
+    text = "\n\n".join(texts)
+    return Note(note_id, title, pages, text, block_pages, body, font, align_to_lines)
 
 
 type PathElement = tuple[int, list[tuple[float, float]], float | None]  # (kind, points, width)
@@ -539,11 +690,16 @@ def decode_path(b: bytes) -> list[PathElement]:
 
 def _page(number: int, pid: SeqId, bg: dict) -> Page:
     page = Page(number, pid, *bg.get("size", DEFAULT_PAGE_SIZE), paper=bg.get("paper"))
+    if margins := bg.get("margins"):
+        page.margins = margins
     if pdf := bg.get("pdf"):
         digest, offset, crop_boxes = pdf
-        page.pdf = PdfPage(digest, offset + pid[2])
-        if pid[2] < len(crop_boxes):
-            width, height = crop_boxes[pid[2]]
+        # a background with fewer PDF pages than the op made pages is a template, repeated:
+        # e.g. a note's one-page paper PDF under every page
+        i = pid[2] % len(crop_boxes) if crop_boxes else pid[2]
+        page.pdf = PdfPage(digest, offset + i)
+        if i < len(crop_boxes):
+            width, height = crop_boxes[i]
             if "size" in bg and width > 0:
                 # ink is placed in the background's space, the PDF page scaled to the
                 # background's width (crop boxes are in PDF points): about a quarter of inked

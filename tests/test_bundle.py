@@ -94,3 +94,36 @@ def test_the_apps_trailing_empty_pages_are_not_content():
     assert last_page_with_content([page(1, shapes=[shape]), page(2), page(3)]) == 1
     assert last_page_with_content([page(1), page(2, pdf=pdf), page(3)]) == 2
     assert last_page_with_content([page(1), page(2)]) == 1  # an empty note still has a page
+
+
+def test_typed_text_keeps_its_styles_paragraphs_and_text_boxes():
+    from appindex_files import change_log_with_text
+
+    from notability_mcp.bundle import TEXT_BLOCK, Style
+
+    note = decode_local("n", change_log_with_text())
+
+    assert (note.font, note.align_to_lines) == (("Inter", 12.0), True)
+    assert [(r.text, r.style) for r in note.body] == [
+        ("Hello ", Style()),
+        ("world", Style(bold=True)),
+        ("\n", Style()),
+        ("second", Style(indent=2)),
+    ]
+    [box] = note.pages[0].blocks
+    assert box.kind == TEXT_BLOCK and [r.text for r in box.text] == ["boxed"]
+    assert note.text == "Hello world\nsecond\n\nboxed"
+
+
+def test_a_one_page_template_pdf_repeats_on_every_page():
+    bg = {"size": (612.0, 792.0), "pdf": ("ab" * 64, 0, [(612.0, 792.0)])}
+
+    assert _page(2, (1, 1, 1), bg).pdf == PdfPage("ab" * 64, 0)
+
+
+def test_a_repeated_template_page_is_not_content():
+    from notability_mcp.bundle import Page, last_page_with_content
+
+    template = PdfPage("ab" * 64, 0)
+    pages = [Page(1, (1, 1, 0), 612, 792, pdf=template), Page(2, (1, 2, 0), 612, 792, pdf=template)]
+    assert last_page_with_content(pages) == 1

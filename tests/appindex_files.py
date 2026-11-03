@@ -299,3 +299,67 @@ def change_log_with_shapes() -> bytes:
     b.PrependUOffsetTRelativeSlot(0, dead, 0)
     ops.append(_op(b, (1, 10), 25, b.EndObject()))
     return _log(b, ops)
+
+
+def _boundary(b: flatbuffers.Builder, seq: SeqId, kind: int) -> int:
+    site, ts, index = seq
+    b.Prep(4, 16)
+    b.Pad(3)
+    b.PrependInt8(kind)
+    b.PrependUint32(index)
+    b.PrependUint32(ts)
+    b.Pad(2)
+    b.PrependUint16(site)
+    return b.Offset()
+
+
+def change_log_with_text() -> bytes:
+    """A change log with typed text:
+    - SetMetadata (1, 1): default font Inter 12 pt, text aligned to lines
+    - body text (1, 2): "Hello world\\nsecond", with "world" made bold (1, 3) and the second
+      paragraph indented two levels (1, 4)
+    - a text box (1, 5) at (100, 400), 200 x 50, holding "boxed" (1, 6)
+    SetMetadata {3: alignTextToLines, 4: defaultFontFamily, 5: defaultFontSize};
+    InsertString {0: location, 1: string, 2: textField}; ModifyStyle {0: start, 1: end
+    (Boundary: SeqId + type, 0 before / 1 after), 2: textField, 3: bold {0: value}};
+    ModifyParagraphStyle {0: start, 1: end, 2: indentLevel {0: value}, 7: textField}."""
+    b = flatbuffers.Builder(512)
+    ops = []
+    family = b.CreateString("Inter")
+    b.StartObject(6)
+    b.PrependBoolSlot(3, True, False)
+    b.PrependUOffsetTRelativeSlot(4, family, 0)
+    b.PrependFloat32Slot(5, 12.0, 0.0)
+    ops.append(_op(b, (1, 1), 1, b.EndObject()))
+    text = b.CreateString("Hello world\nsecond")
+    b.StartObject(3)
+    b.PrependUOffsetTRelativeSlot(1, text, 0)
+    ops.append(_op(b, (1, 2), 8, b.EndObject()))
+    b.StartObject(1)
+    b.PrependBoolSlot(0, True, False)
+    bold = b.EndObject()
+    b.StartObject(4)
+    b.PrependStructSlot(0, _boundary(b, (1, 2, 6), 0), 0)  # before "w"
+    b.PrependStructSlot(1, _boundary(b, (1, 2, 10), 1), 0)  # after "d"
+    b.PrependUOffsetTRelativeSlot(3, bold, 0)
+    ops.append(_op(b, (1, 3), 12, b.EndObject()))
+    b.StartObject(1)
+    b.PrependUint8Slot(0, 2, 0)
+    indent = b.EndObject()
+    b.StartObject(8)
+    b.PrependStructSlot(0, _seq_id(b, (1, 2, 12)), 0)  # "s"
+    b.PrependStructSlot(1, _seq_id(b, (1, 2, 17)), 0)  # "d"
+    b.PrependUOffsetTRelativeSlot(2, indent, 0)
+    ops.append(_op(b, (1, 4), 13, b.EndObject()))
+    b.StartObject(7)
+    b.PrependInt8Slot(0, 0, 0)  # a text block
+    b.PrependStructSlot(2, _seq_id(b, (0, 0, 0)), 0)
+    b.PrependStructSlot(3, _point(b, 100, 400), 0)
+    b.PrependStructSlot(6, _point(b, 200, 50), 0)
+    ops.append(_op(b, (1, 5), 22, b.EndObject()))
+    boxed = b.CreateString("boxed")
+    b.StartObject(3)
+    b.PrependUOffsetTRelativeSlot(1, boxed, 0)
+    b.PrependStructSlot(2, _id(b, 1, 5), 0)
+    ops.append(_op(b, (1, 6), 8, b.EndObject()))
+    return _log(b, ops)

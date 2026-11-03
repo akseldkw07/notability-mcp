@@ -44,8 +44,12 @@ logs while it runs and syncs risks corrupting notes.
   `notability://` URL scheme only opens notes. Watch for an export intent or Shortcuts action.
   Driving the menu and save dialog (Accessibility permission, brings the app forward, breaks
   when the UI changes) is the last resort; until then `export_note_pdf` renders.
-- **Typed text** isn't drawn on page images or exports (ink, shapes, paper, PDF pages and pasted
-  images are). It needs the text runs' positions and styles from the change log.
+  `scripts/save_as.py` does drive the menu, but only as a dev tool: it saves the app's PDFs of
+  sample notes as references for `tests/test_parity.py`, which checks our export against them.
+- **Typed text calibration.** Body text is measured on app exports (line pitch, lined-paper
+  snapping, indent, page breaks). Text boxes, centred / right alignment, lists (decorators),
+  line spacing and highlight colour are drawn from guesses or not at all: add references with
+  them (`scripts/save_as.py --note ...`) and tune `text.py` until the parity test passes.
 - **25 inked PDF pages** on a real library still have ink past the page edge after the
   page-size fix: look at one.
 
