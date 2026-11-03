@@ -129,3 +129,13 @@ def test_a_repeated_template_page_is_not_content():
     template = PdfPage("ab" * 64, 0)
     pages = [Page(1, (1, 1, 0), 612, 792, pdf=template), Page(2, (1, 2, 0), 612, 792, pdf=template)]
     assert exported_page_count(pages) == 1
+
+
+def test_a_paragraph_style_starting_on_the_newline_before_covers_only_the_next_paragraph():
+    from notability_mcp.bundle import _paragraphs
+
+    seq = [(1, 1, i) for i in range(7)]  # "ab\ncd\ne"
+    glyph = dict(zip(seq, "ab\ncd\ne", strict=True))
+
+    assert _paragraphs(seq, glyph, 2, 4) == (3, 6)  # "cd\n", not "ab\n" too
+    assert _paragraphs(seq, glyph, 1, 1) == (0, 3)  # inside a paragraph: all of it

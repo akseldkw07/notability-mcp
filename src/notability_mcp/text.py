@@ -24,15 +24,16 @@ from PIL import Image, ImageDraw, ImageFont
 from notability_mcp.bundle import IMAGE_BLOCK, TEXT_BLOCK, Block, Note, Page, Run, Style
 
 GLYPH_SCALE = 1.0  # glyphs at the style's size
-# Line height and the baseline's depth below the line's top, in font sizes, measured on the
-# app's exports; other fonts use their own metrics (ascent + descent + line gap, and ascent +
-# line gap). Helvetica Neue's line height is its own (1.193); Inter gets more room than its own.
-LINE_HEIGHT = {"Inter": 1.7}
-BASELINE_DEPTH = {"Inter": 1.071, "Helvetica Neue": 1.0}
+# Line height and the baseline's depth below the line's top, measured on the app's exports, as
+# (a, b): a x the font size + b points. Inter: 23.8 / 15.0 at 14 pt, 21.0 / 13.0 at 12 pt (more
+# room than its own metrics give). Other fonts use their own metrics (ascent + descent + line
+# gap, and ascent + line gap); Helvetica Neue's line height is its own (1.193).
+LINE_HEIGHT = {"Inter": (1.4, 4.2)}
+BASELINE_DEPTH = {"Inter": (1.0, 1.0), "Helvetica Neue": (1.0, 0.0)}
 INDENT_STEP = 25.0  # points per paragraph indent level
 SNAP_RAISE = 0.12  # on lined paper, the baseline sits this many font sizes above the line
 TAB_STOP = 18.0  # points between tab stops, from the line's start
-LIST_INDENT = 25.0  # a list item's text, after its marker (not yet measured)
+LIST_INDENT = 12.0  # a list item's text, after its marker (measured on bulleted lists)
 BOX_PADDING = 0.0  # inside a text box's edges (not yet measured)
 
 TEXT_COLOR = (0, 0, 0, 255)
@@ -146,7 +147,8 @@ def text_width(text: str, font: Font) -> float:
 def line_height(font: Font) -> float:
     """A line of `font`'s height in points."""
     if font.family in LINE_HEIGHT:
-        return LINE_HEIGHT[font.family] * font.size
+        a, b = LINE_HEIGHT[font.family]
+        return a * font.size + b
     metrics = _truetype(font, 1000).font
     return metrics.height / 1000 * font.size  # pyright: ignore[reportAttributeAccessIssue]
 
@@ -154,7 +156,8 @@ def line_height(font: Font) -> float:
 def baseline_depth(font: Font) -> float:
     """How far below a line's top its baseline is, in points."""
     if font.family in BASELINE_DEPTH:
-        return BASELINE_DEPTH[font.family] * font.size
+        a, b = BASELINE_DEPTH[font.family]
+        return a * font.size + b
     metrics = _truetype(font, 1000).font
     gap = metrics.height - metrics.ascent - metrics.descent  # pyright: ignore[reportAttributeAccessIssue]
     return (metrics.ascent + gap) / 1000 * font.size  # pyright: ignore[reportAttributeAccessIssue]
@@ -237,10 +240,12 @@ def _tallest(line: Line, paragraph: Paragraph, default: tuple[str, float]) -> Fo
     return max(fonts, key=line_height, default=_resolve(Style(), default))
 
 
-def rulings(length: float, spacing: float) -> list[float]:
-    """Positions of the paper's lines along an edge `length` long: `spacing` apart, laid out so
-    the edge's middle falls between two lines (as on the app's paper)."""
-    first = (length / 2 - spacing / 2) % spacing
+def rulings(length: float, spacing: float, centred: bool = True) -> list[float]:
+    """Positions of the paper's lines along an edge `length` long, `spacing` apart: laid out
+    so the edge's middle falls between two lines, or (not `centred`) from the edge's start.
+    Measured on the app's paper: lined paper's rows and squared paper's columns are centred;
+    squared paper's rows start at the page's top."""
+    first = (length / 2 - spacing / 2) % spacing if centred else 0.0
     return [first + i * spacing for i in range(int((length - first) / spacing) + 1)]
 
 
@@ -266,7 +271,8 @@ class _PageCursor:
             self.ruled = paper.flair == 0  # lined; squared paper uses its last line too
             last = page.height - self.bottom
             first = self.top + sp  # a whole line's room above it (as the Mac app lays it out)
-            self.slots = [y for y in rulings(page.height, sp) if first <= y <= last]
+            rows = rulings(page.height, sp, centred=paper.flair == 0)
+            self.slots = [y for y in rows if first <= y <= last]
 
     @property
     def x0(self) -> float:

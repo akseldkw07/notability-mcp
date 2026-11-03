@@ -134,11 +134,11 @@ def _draw_paper(img: Image.Image, paper: Paper, s: float, pattern: bool = True) 
     w, h = img.size
     inset = 0.0 if paper.bleeds else 36 * s  # default margins
 
-    def ticks(length: float) -> list[float]:
-        return [t * s for t in rulings(length / s, paper.spacing or 0.0)]
+    def ticks(length: float, centred: bool = True) -> list[float]:
+        return [t * s for t in rulings(length / s, paper.spacing or 0.0, centred)]
 
     xs = [x for x in ticks(w) if inset <= x <= w - inset]
-    ys = [y for y in ticks(h) if inset <= y <= h - inset]
+    ys = [y for y in ticks(h, centred=paper.flair != 2) if inset <= y <= h - inset]
     draw = ImageDraw.Draw(img)
     width = max(1, round(PAPER_LINE_WIDTH * s))
     if paper.flair == 1:

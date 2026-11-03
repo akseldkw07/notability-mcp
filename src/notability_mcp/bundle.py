@@ -390,6 +390,8 @@ def _paragraphs(
     the character after the previous newline, on to the next newline (included)."""
     first = 0 if start is None else start
     last = len(seq) - 1 if end is None else end
+    if first < last and glyph[seq[first]] == "\n":
+        first += 1  # starts on the newline that ends the paragraph before: not that one
     while first > 0 and glyph[seq[first - 1]] != "\n":
         first -= 1
     while last < len(seq) - 1 and glyph[seq[last]] != "\n":
