@@ -46,10 +46,16 @@ logs while it runs and syncs risks corrupting notes.
   when the UI changes) is the last resort; until then `export_note_pdf` renders.
   `scripts/save_as.py` does drive the menu, but only as a dev tool: it saves the app's PDFs of
   sample notes as references for `tests/test_parity.py`, which checks our export against them.
-- **Typed text calibration.** Body text is measured on app exports (line pitch, lined-paper
-  snapping, indent, page breaks). Text boxes, centred / right alignment, lists (decorators),
-  line spacing and highlight colour are drawn from guesses or not at all: add references with
-  them (`scripts/save_as.py --note ...`) and tune `text.py` until the parity test passes.
+- **Parity status** (14 app exports of real notes, 2026-11-03): 12 pass. Open:
+  - on lined paper the app sometimes moves a page's last line of text to the next page where we
+    fit it (the last usable line isn't just "above the bottom margin");
+  - one reference was exported before its images loaded (placeholders in the app's PDF):
+    re-export it now that `save_as.py` waits for the note to settle.
+- **Typed text calibration.** Measured on app exports: line height per font (Helvetica Neue's
+  own; Inter 1.7), baseline, page breaks, lined-paper snapping, indent, the app dropping a last
+  page that holds only text. Text boxes, centred / right alignment, lists (decorators are not
+  drawn), line spacing and highlight colour are guesses or missing: add references with them
+  (`scripts/save_as.py --note ...`) and tune `text.py` until the parity test passes.
 - **25 inked PDF pages** on a real library still have ink past the page edge after the
   page-size fix: look at one.
 

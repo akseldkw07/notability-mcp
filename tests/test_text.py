@@ -53,7 +53,7 @@ def test_on_lined_paper_aligned_text_sits_on_the_lines():
 
     a, b = body_spans(n)[1]
 
-    lines = [y for y in rulings(792, 40) if y >= 14]  # room for 14 pt text above the line
+    lines = [y for y in rulings(792, 40) if y >= 40]  # a whole line's room above it
     assert (a.x, b.x) == (20, 20)
     assert a.baseline == pytest.approx(lines[0] - text.SNAP_RAISE * 14)
     assert b.baseline - a.baseline == pytest.approx(40)

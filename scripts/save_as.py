@@ -26,6 +26,8 @@ from notability_mcp.bundle import LINE, POLYGON, TEXT_BLOCK, Note, decode_local
 
 WINDOW_TIMEOUT = 20.0  # seconds for the note's window to come up
 SAVE_TIMEOUT = 120.0  # seconds for the app to write a long note's PDF
+SETTLE = 5  # seconds to let the note load its images before exporting: too soon, and the
+# app's PDF shows placeholders for them
 
 # AppleScript run with the arguments after `--`; System Events needs Accessibility permission.
 _CLICK_EXPORT = """
@@ -38,6 +40,7 @@ on run argv
       if (current date) > deadline then error "the note's window didn't open: " & noteTitle
       delay 0.25
     end repeat
+    delay %(settle)d
     set fileMenu to menu 1 of menu bar item "File" of menu bar 1
     click menu item "PDF..." of menu 1 of menu item "Export" of fileMenu
     set deadline to (current date) + 10
@@ -141,7 +144,7 @@ def save_as(note_id: str, title: str, out: Path) -> Path:
     target = out / f"{note_id}.pdf"
     target.unlink(missing_ok=True)
     _open(note_id)
-    _osascript(_CLICK_EXPORT % {"timeout": WINDOW_TIMEOUT}, title)
+    _osascript(_CLICK_EXPORT % {"timeout": WINDOW_TIMEOUT, "settle": SETTLE}, title)
     _osascript(_SAVE_TO, str(out), target.stem)
     if not _wait_for(target, SAVE_TIMEOUT):
         raise RuntimeError(f"no PDF at {target} after {SAVE_TIMEOUT:.0f} s")

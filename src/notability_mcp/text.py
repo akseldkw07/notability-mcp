@@ -223,7 +223,7 @@ class _Cursor:
         if paper and lined and (paper.spacing or 0) > 1:
             sp = paper.spacing or 0.0
             last = page.height - self.bottom
-            first = self.top + note.font[1]  # room above the line for a line of text
+            first = self.top + sp  # a whole line's room above it (as the Mac app lays it out)
             self.slots = [y for y in rulings(page.height, sp) if first <= y <= last]
 
     @property
