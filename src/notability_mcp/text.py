@@ -14,6 +14,7 @@ tests/test_parity.py, which compare the two):
 - glyphs are drawn at GLYPH_SCALE x the style's size.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -31,6 +32,8 @@ BASELINE_DEPTH = {"Inter": 1.071, "Helvetica Neue": 1.0}
 INDENT_STEP = 25.0  # points per paragraph indent level
 SNAP_RAISE = 0.12  # on lined paper, the baseline sits this many font sizes above the line
 TAB_STOP = 18.0  # points between tab stops, from the line's start
+LIST_INDENT = 25.0  # a list item's text, after its marker (not yet measured)
+BOX_PADDING = 0.0  # inside a text box's edges (not yet measured)
 
 TEXT_COLOR = (0, 0, 0, 255)
 
@@ -234,30 +237,6 @@ def _tallest(line: Line, paragraph: Paragraph, default: tuple[str, float]) -> Fo
     return max(fonts, key=line_height, default=_resolve(Style(), default))
 
 
-def _spans(line: Line, x: float, baseline: float, width: float, align: int) -> list[Span]:
-    """Place a line's pieces from `x` (or centred / right-aligned in `width`)."""
-    natural = 0.0
-    for i, (text, _, font) in enumerate(line):
-        natural = advance(text.rstrip(" ") if i == len(line) - 1 else text, font, natural)
-    start = x
-    if align == 2:
-        start += (width - natural) / 2
-    elif align == 3:
-        start += width - natural
-    out = []
-    rel = 0.0  # from the line's start, where tab stops are counted
-    for text, style, font in line:
-        color = style.color or TEXT_COLOR
-        for i, part in enumerate(text.split("\t")):
-            if i:
-                rel = (rel // TAB_STOP + 1) * TAB_STOP
-            if part:
-                out.append(Span(start + rel, baseline, part, font, color, style.underline,
-                                style.strikethrough))  # fmt: skip
-            rel += text_width(part, font)
-    return out
-
-
 def rulings(length: float, spacing: float) -> list[float]:
     """Positions of the paper's lines along an edge `length` long: `spacing` apart, laid out so
     the edge's middle falls between two lines (as on the app's paper)."""
@@ -265,7 +244,7 @@ def rulings(length: float, spacing: float) -> list[float]:
     return [first + i * spacing for i in range(int((length - first) / spacing) + 1)]
 
 
-class _Cursor:
+class _PageCursor:
     """Where the body text's next line goes on a page: on the paper's lines (see body_spans),
     else one line height after another."""
 
@@ -290,14 +269,21 @@ class _Cursor:
             self.slots = [y for y in rulings(page.height, sp) if first <= y <= last]
 
     @property
-    def width(self) -> float:
-        return self.page.width - self.left - self.right
+    def x0(self) -> float:
+        return self.left
 
-    def next(self, font: Font, text: bool = True) -> float | None:
+    @property
+    def x1(self) -> float:
+        return self.page.width - self.right
+
+    def gaps(self, left: float, right: float) -> list[tuple[float, float]]:
+        return _gaps(self.page, left, right, *self.box)
+
+    def next(self, font: Font, text: bool = True, spacing: float = 0.0) -> float | None:
         """The baseline for a line whose tallest font is `font`, or None when the page is
-        full. On lined (not squared) paper a line with `text` also needs room below it: the
-        app moves it to the next page rather than onto a line close to the page's bottom (an
-        empty line may take that line)."""
+        full; `spacing` is the paragraph's line spacing (0: 1). On lined (not squared) paper
+        a line with `text` also needs room below it: the app moves it to the next page rather
+        than onto a line close to the page's bottom (an empty line may take that line)."""
         if self.slots is not None:
             if not self.slots:
                 return None
@@ -309,7 +295,7 @@ class _Cursor:
             line = self.slots.pop(0)
             self.box = (line - self.spacing, line)
             return line - SNAP_RAISE * font.size
-        height = line_height(font)
+        height = line_height(font) * (spacing or 1.0)
         if self.y + height > self.page.height - self.bottom and self.y > self.top:
             return None
         baseline = self.y + baseline_depth(font)
@@ -318,42 +304,109 @@ class _Cursor:
         return baseline
 
 
+class _BoxCursor:
+    """Where a text box's next line goes: one line height after another from its top, inset by
+    BOX_PADDING; a box grows with its text, so it never fills up."""
+
+    def __init__(self, block: Block) -> None:
+        (x, y), (w, _) = block.origin, block.size
+        self.x0, self.x1 = x + BOX_PADDING, x + w * (block.scale[0] or 1.0) - BOX_PADDING
+        self.y = y + BOX_PADDING
+
+    def gaps(self, left: float, right: float) -> list[tuple[float, float]]:
+        return [(left, right)]
+
+    def next(self, font: Font, text: bool = True, spacing: float = 0.0) -> float | None:
+        baseline = self.y + baseline_depth(font)
+        self.y += line_height(font) * (spacing or 1.0)
+        return baseline
+
+
+type _Cursor = _PageCursor | _BoxCursor
+
+
+def _flow(
+    runs: list[Run],
+    default: tuple[str, float],
+    cursor: _Cursor,
+    next_cursor: Callable[[], _Cursor | None],
+) -> list[tuple[_Cursor, list[Span]]]:
+    """Lay out text line by line: each paragraph from the cursor's left edge (plus its indent,
+    plus LIST_INDENT after a list marker) to its right edge, around anything the cursor says
+    is in the way; `next_cursor` gives the next page when one fills up (None: stop)."""
+    out: list[tuple[_Cursor, list[Span]]] = []
+    numbers: dict[int, int] = {}  # running item number per indent level
+    for paragraph in paragraphs(runs):
+        style = next((st for text, st in paragraph if text), paragraph[0][1])
+        indent = INDENT_STEP * style.indent
+        marker = _marker(style, numbers)
+        inset = indent + (LIST_INDENT if marker else 0.0)
+        pieces = [
+            (word, st, font)
+            for text, st in paragraph
+            for font in [_resolve(st, default)]
+            for word in _words(text)
+        ]
+        first = True
+        while True:
+            # the line's height: from the words it would hold across the whole width
+            width = cursor.x1 - cursor.x0 - inset
+            guess = wrap([(w, st) for w, st, _ in pieces], default, width)[0] if pieces else []
+            tallest = _tallest(guess, paragraph, default)
+            while (baseline := cursor.next(tallest, bool(pieces), style.line_spacing)) is None:
+                following = next_cursor()
+                if following is None:
+                    return out  # the app adds pages as text grows; the log has them all
+                cursor = following
+            spans = []
+            if marker and first:
+                font = _resolve(style, default)
+                color = style.color or TEXT_COLOR
+                spans.append(Span(cursor.x0 + indent, baseline, marker, font, color))
+            if pieces:
+                left, right = cursor.x0 + inset, cursor.x1
+                words, pieces = _fill(pieces, cursor.gaps(left, right), left, right, baseline,
+                                      style.align)  # fmt: skip
+                spans.extend(words)
+            out.append((cursor, spans))
+            first = False
+            if not pieces:
+                break
+    return out
+
+
+def _marker(style: Style, numbers: dict[int, int]) -> str | None:
+    """A list paragraph's marker ("•", or its number: items count up through consecutive
+    numbered paragraphs at the same indent, deeper levels restart)."""
+    for level in [
+        lv for lv in numbers if lv > style.indent or (lv == style.indent and style.decorator != 2)
+    ]:
+        del numbers[level]
+    if style.decorator == 1:
+        return "•"
+    if style.decorator == 2:
+        numbers[style.indent] = numbers.get(style.indent, 0) + 1
+        return f"{numbers[style.indent]}."
+    return None
+
+
 def body_spans(note: Note) -> dict[int, list[Span]]:
-    """The body text placed on the note's pages, by page number. Each line runs from the left
-    margin (plus the paragraph's indent) to the right margin, around any pasted image it
-    crosses (the app wraps text around images: what fits left of one, then right of it)."""
+    """The body text placed on the note's pages, by page number. Lines run from the left
+    margin to the right one, around any pasted image they cross (the app wraps text around
+    images: what fits left of one, then right of it)."""
     out: dict[int, list[Span]] = {}
     if not note.body or not note.pages:
         return out
     pages = iter(note.pages)
-    cursor = _Cursor(note, next(pages))
-    for paragraph in paragraphs(note.body):
-        style = paragraph[0][1]
-        indent = INDENT_STEP * style.indent
-        pieces = [
-            (word, st, font)
-            for text, st in paragraph
-            for font in [_resolve(st, note.font)]
-            for word in _words(text)
-        ]
-        while True:
-            # the line's height: from the words it would hold across the whole width
-            width = cursor.width - indent
-            guess = wrap([(w, st) for w, st, _ in pieces], note.font, width)[0] if pieces else []
-            tallest = _tallest(guess, paragraph, note.font)
-            while (baseline := cursor.next(tallest, bool(pieces))) is None:
-                page = next(pages, None)
-                if page is None:
-                    return out  # the app adds pages as text grows; the log has them all
-                cursor = _Cursor(note, page)
-            if not pieces:
-                break  # an empty paragraph is one empty line
-            left, right = cursor.left + indent, cursor.page.width - cursor.right
-            gaps = _gaps(cursor.page, left, right, *cursor.box)
-            spans, pieces = _fill(pieces, gaps, left, right, baseline, style.align)
+
+    def following() -> _Cursor | None:
+        page = next(pages, None)
+        return None if page is None else _PageCursor(note, page)
+
+    for cursor, spans in _flow(note.body, note.font, _PageCursor(note, next(pages)), following):
+        if spans:
+            assert isinstance(cursor, _PageCursor)
             out.setdefault(cursor.page.number, []).extend(spans)
-            if not pieces:
-                break
     return out
 
 
@@ -435,23 +488,11 @@ def _place(
 
 
 def box_spans(block: Block, default: tuple[str, float]) -> list[Span]:
-    """A text box's text, wrapped to its width from its top-left corner."""
+    """A text box's text, laid out like body text inside the box."""
     if block.kind != TEXT_BLOCK or not block.text:
         return []
-    sx, sy = block.scale
-    width = block.size[0] * (sx or 1.0)
-    out: list[Span] = []
-    y = block.origin[1]
-    for paragraph in paragraphs(block.text):
-        style = paragraph[0][1]
-        indent = INDENT_STEP * style.indent
-        for line in wrap(paragraph, default, width - indent):
-            tallest = _tallest(line, paragraph, default)
-            x = block.origin[0] + indent
-            baseline = y + baseline_depth(tallest) * (sy or 1.0)
-            out.extend(_spans(line, x, baseline, width - indent, style.align))
-            y += line_height(tallest) * (sy or 1.0)
-    return out
+    flowed = _flow(block.text, default, _BoxCursor(block), lambda: None)
+    return [span for _, spans in flowed for span in spans]
 
 
 def page_spans(note: Note, page: Page, body: dict[int, list[Span]] | None = None) -> list[Span]:

@@ -177,9 +177,13 @@ class Style:
     italic: bool = False
     underline: bool = False
     strikethrough: bool = False
+    subscript: bool = False
+    superscript: bool = False
     color: tuple[int, int, int, int] | None = None
     indent: int = 0  # paragraph indent level
     align: int = 0  # paragraph alignment: 0 natural, 1 left, 2 centre, 3 right
+    decorator: int = 0  # paragraph list style: 0 none, 1 bullet, 2 number, 3 checkbox
+    line_spacing: float = 0.0  # paragraph line height multiple; 0: the font's own
 
 
 @dataclass
@@ -358,8 +362,14 @@ def _styled_runs(
         end = position(p._unpack(1, _BOUNDARY), len(seq))
         for i in range(start, min(end, len(seq))):
             if op == _Op.CLEAR_STYLE:  # paragraph attributes stay unless asked
-                para = (0, 0) if p.scalar(2, "<?", False) else (styles[i].indent, styles[i].align)
-                styles[i] = Style(indent=para[0], align=para[1])
+                old = styles[i]
+                keep = not p.scalar(2, "<?", False)
+                styles[i] = Style(
+                    indent=old.indent if keep else 0,
+                    align=old.align if keep else 0,
+                    decorator=old.decorator if keep else 0,
+                    line_spacing=old.line_spacing if keep else 0.0,
+                )
             else:
                 styles[i] = _restyle(styles[i], p)
     runs: list[Run] = []
@@ -388,19 +398,26 @@ def _paragraphs(
 
 
 def _repara(style: Style, p: "_Table") -> Style:
-    """ModifyParagraphStyle's indent level (field 2) and alignment (field 3) over `style`."""
+    """ModifyParagraphStyle's indent level (field 2), alignment (3), line spacing (4) and list
+    style (5) over `style`."""
     changes: dict = {}
     if t := p.table(2):
         changes["indent"] = t.scalar(0, "<B", 0)
     if t := p.table(3):
         changes["align"] = t.scalar(0, "<b", 0)
+    if t := p.table(4):
+        changes["line_spacing"] = t.scalar(0, "<f", 0.0)
+    if t := p.table(5):
+        changes["decorator"] = t.scalar(0, "<b", 0)
     return replace(style, **changes) if changes else style
 
 
 def _restyle(style: Style, p: "_Table") -> Style:
     """ModifyStyle's Set* fields over `style` (each Set* table holds its value in field 0)."""
     changes: dict = {}
-    for fid, name in ((3, "bold"), (4, "italic"), (5, "underline"), (12, "strikethrough")):
+    flags = ((3, "bold"), (4, "italic"), (5, "underline"), (11, "superscript"),
+             (12, "subscript"), (13, "strikethrough"))  # fmt: skip
+    for fid, name in flags:
         if t := p.table(fid):
             changes[name] = t.scalar(0, "<?", False)
     if t := p.table(7):

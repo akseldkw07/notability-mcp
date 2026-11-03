@@ -316,13 +316,15 @@ def _boundary(b: flatbuffers.Builder, seq: SeqId, kind: int) -> int:
 def change_log_with_text() -> bytes:
     """A change log with typed text:
     - SetMetadata (1, 1): default font Inter 12 pt, text aligned to lines
-    - body text (1, 2): "Hello world\\nsecond", with "world" made bold (1, 3) and the second
-      paragraph indented two levels (1, 4)
+    - body text (1, 2): "Hello world\\nsecond", with "world" made bold (1, 3), the second
+      paragraph indented two levels, bulleted, at 1.5 line spacing (1, 4), "Hello" subscript
+      (1, 7) and "world" struck through (1, 8)
     - a text box (1, 5) at (100, 400), 200 x 50, holding "boxed" (1, 6)
     SetMetadata {3: alignTextToLines, 4: defaultFontFamily, 5: defaultFontSize};
     InsertString {0: location, 1: string, 2: textField}; ModifyStyle {0: start, 1: end
-    (Boundary: SeqId + type, 0 before / 1 after), 2: textField, 3: bold {0: value}};
-    ModifyParagraphStyle {0: start, 1: end, 2: indentLevel {0: value}, 7: textField}."""
+    (Boundary: SeqId + type, 0 before / 1 after), 2: textField, 3: bold {0: value}, 12:
+    subscript, 13: strikethrough}; ModifyParagraphStyle {0: start, 1: end, 2: indentLevel
+    {0: value}, 4: lineSpacing, 5: decoratorStyle (1 bullet), 7: textField}."""
     b = flatbuffers.Builder(512)
     ops = []
     family = b.CreateString("Inter")
@@ -346,11 +348,28 @@ def change_log_with_text() -> bytes:
     b.StartObject(1)
     b.PrependUint8Slot(0, 2, 0)
     indent = b.EndObject()
+    b.StartObject(1)
+    b.PrependFloat32Slot(0, 1.5, 0.0)
+    spacing = b.EndObject()
+    b.StartObject(1)
+    b.PrependInt8Slot(0, 1, 0)
+    bullet = b.EndObject()
     b.StartObject(8)
     b.PrependStructSlot(0, _seq_id(b, (1, 2, 12)), 0)  # "s"
     b.PrependStructSlot(1, _seq_id(b, (1, 2, 17)), 0)  # "d"
     b.PrependUOffsetTRelativeSlot(2, indent, 0)
+    b.PrependUOffsetTRelativeSlot(4, spacing, 0)
+    b.PrependUOffsetTRelativeSlot(5, bullet, 0)
     ops.append(_op(b, (1, 4), 13, b.EndObject()))
+    for oid, fid, first, last in (((1, 7), 12, 0, 4), ((1, 8), 13, 6, 10)):
+        b.StartObject(1)
+        b.PrependBoolSlot(0, True, False)
+        on = b.EndObject()
+        b.StartObject(fid + 1)
+        b.PrependStructSlot(0, _boundary(b, (1, 2, first), 0), 0)
+        b.PrependStructSlot(1, _boundary(b, (1, 2, last), 1), 0)
+        b.PrependUOffsetTRelativeSlot(fid, on, 0)
+        ops.append(_op(b, oid, 12, b.EndObject()))
     b.StartObject(7)
     b.PrependInt8Slot(0, 0, 0)  # a text block
     b.PrependStructSlot(2, _seq_id(b, (0, 0, 0)), 0)

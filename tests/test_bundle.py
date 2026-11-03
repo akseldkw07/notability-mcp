@@ -106,10 +106,11 @@ def test_typed_text_keeps_its_styles_paragraphs_and_text_boxes():
 
     assert (note.font, note.align_to_lines) == (("Inter", 12.0), True)
     assert [(r.text, r.style) for r in note.body] == [
-        ("Hello ", Style()),
-        ("world", Style(bold=True)),
+        ("Hello", Style(subscript=True)),  # field 12 is subscript, not strikethrough
+        (" ", Style()),
+        ("world", Style(bold=True, strikethrough=True)),
         ("\n", Style()),
-        ("second", Style(indent=2)),
+        ("second", Style(indent=2, decorator=1, line_spacing=1.5)),
     ]
     [box] = note.pages[0].blocks
     assert box.kind == TEXT_BLOCK and [r.text for r in box.text] == ["boxed"]

@@ -137,3 +137,49 @@ def test_a_glyph_the_font_lacks_comes_from_a_fallback_font():
     img = Image.open(io.BytesIO(render_page(page, 792, text=page_spans(n, page)))).convert("L")
     left, top, right, bottom = ImageOps.invert(img).getbbox() or (0, 0, 0, 0)
     assert right - left > bottom - top  # an arrow: wider than tall, not the missing-glyph box
+
+
+def _body(*runs: Run, pages: list[Page] | None = None) -> dict:
+    pages = pages or [Page(1, (1, 1, 0), 612, 792)]
+    return body_spans(Note("n", "t", pages, "", body=list(runs), font=FONT))
+
+
+def test_bulleted_paragraphs_get_a_marker_and_hang_their_wrapped_lines():
+    bullet = Style(decorator=1)
+    spans = _body(Run("item " * 40, bullet))[1]
+
+    marker, first = spans[0], spans[1]
+    assert marker.text == "•" and marker.x == 36
+    assert first.x == 36 + text.LIST_INDENT
+    wrapped = [s for s in spans if s.baseline > first.baseline]
+    assert wrapped and min(s.x for s in wrapped) == 36 + text.LIST_INDENT  # hanging indent
+
+
+def test_numbered_paragraphs_count_up_and_restart_after_a_plain_one():
+    number, plain = Style(decorator=2), Style()
+    spans = _body(Run("a\nb\n", number), Run("x\n", plain), Run("c", number))[1]
+
+    markers = [s.text for s in spans if s.x == 36 and s.text.endswith(".")]
+    assert markers == ["1.", "2.", "1."]
+
+
+def test_line_spacing_multiplies_the_line_height():
+    plain = _body(Run("a\nb", Style()))[1]
+    spaced = _body(Run("a\nb", Style(line_spacing=1.5)))[1]
+
+    gap = plain[1].baseline - plain[0].baseline
+    assert spaced[1].baseline - spaced[0].baseline == pytest.approx(1.5 * gap)
+
+
+def test_text_boxes_lay_out_lists_like_body_text():
+    box = Block(None, TEXT_BLOCK, 0, (100.0, 400.0), (300.0, 80.0), (1.0, 1.0), 0.0, None, None,
+                [Run("one\ntwo", Style(decorator=1))])  # fmt: skip
+    page = Page(1, (1, 1, 0), 612, 792, blocks=[box])
+
+    spans = page_spans(Note("n", "t", [page], "", font=FONT), page)
+
+    markers = [s for s in spans if s.text == "•"]
+    words = [s for s in spans if s.text in ("one", "two")]
+    assert len(markers) == 2 and all(m.x == 100 + text.BOX_PADDING for m in markers)
+    assert all(w.x == 100 + text.BOX_PADDING + text.LIST_INDENT for w in words)
+    assert words[1].baseline > words[0].baseline > 400
