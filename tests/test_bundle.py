@@ -83,17 +83,19 @@ def test_shapes_land_on_their_page_with_moves_and_deletes_applied():
     assert len(rect.points) == 4
 
 
-def test_the_apps_trailing_empty_pages_are_not_content():
-    from notability_mcp.bundle import Page, Shape, last_page_with_content
+def test_the_apps_export_leaves_out_only_a_last_empty_page():
+    from notability_mcp.bundle import Page, Shape, exported_page_count
 
     def page(n: int, **kw) -> Page:
         return Page(n, (1, 1, n), 612, 792, **kw)
 
     shape = Shape(None, 1, (0, 0), (1, 1), 0, [], (0, 0), (0, 0, 0, 255), 1, None, 0, 1)
     pdf = PdfPage("ab" * 64, 0)
-    assert last_page_with_content([page(1, shapes=[shape]), page(2), page(3)]) == 1
-    assert last_page_with_content([page(1), page(2, pdf=pdf), page(3)]) == 2
-    assert last_page_with_content([page(1), page(2)]) == 1  # an empty note still has a page
+    # an empty page in the middle stays; only the last goes
+    assert exported_page_count([page(1, shapes=[shape]), page(2), page(3)]) == 2
+    assert exported_page_count([page(1), page(2, pdf=pdf)]) == 2  # its own PDF page
+    assert exported_page_count([page(1), page(2)], with_text={2}) == 2  # typed text
+    assert exported_page_count([page(1)]) == 1  # an empty note still has a page
 
 
 def test_typed_text_keeps_its_styles_paragraphs_and_text_boxes():
@@ -122,8 +124,8 @@ def test_a_one_page_template_pdf_repeats_on_every_page():
 
 
 def test_a_repeated_template_page_is_not_content():
-    from notability_mcp.bundle import Page, last_page_with_content
+    from notability_mcp.bundle import Page, exported_page_count
 
     template = PdfPage("ab" * 64, 0)
     pages = [Page(1, (1, 1, 0), 612, 792, pdf=template), Page(2, (1, 2, 0), 612, 792, pdf=template)]
-    assert last_page_with_content(pages) == 1
+    assert exported_page_count(pages) == 1

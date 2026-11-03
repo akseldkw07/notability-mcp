@@ -77,7 +77,7 @@ end run
 _INSPECT = """
 on describe(e, depth)
   set out to ""
-  try
+  tell application "System Events" to try
     repeat with c in UI elements of e
       set line_ to ""
       repeat depth times

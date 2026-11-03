@@ -5,19 +5,16 @@ from collections.abc import Callable
 from pathlib import Path
 
 from notability_mcp import pdf
-from notability_mcp.bundle import Note, last_page_with_content
+from notability_mcp.bundle import Note, exported_page_count
 from notability_mcp.render import render_image
 from notability_mcp.text import body_spans, page_spans
 
 EXPORT_DPI = 150
-SHORT_EDGE = 612.0  # the app's export scales each page so its short edge is 612 pt (US Letter)
 
 
 def default_pages(note: Note) -> list[int]:
-    """Every page up to the last one with anything on it, typed text included: the app's
-    export leaves out the empty pages a note ends with."""
-    last = max(last_page_with_content(note.pages), *body_spans(note), 1)
-    return list(range(1, last + 1))
+    """The pages the app's own export has: every page, less a last one that's empty."""
+    return list(range(1, exported_page_count(note.pages, set(body_spans(note))) + 1))
 
 
 def write_pdf(
@@ -41,8 +38,9 @@ def write_pdf(
                 if page.pdf.asset not in backgrounds:
                     backgrounds[page.pdf.asset] = asset(page.pdf.asset)
                 background = backgrounds[page.pdf.asset]
-            k = SHORT_EDGE / min(page.width, page.height)
-            width, height = page.width * k, page.height * k
+            # the Mac app's File > Export > PDF keeps each page's own size (its iPad export
+            # scales pages to US Letter width)
+            width, height = page.width, page.height
             edge = round(max(width, height) / 72 * EXPORT_DPI)
             out = io.BytesIO()
             spans = page_spans(note, page, body)

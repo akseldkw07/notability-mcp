@@ -699,9 +699,9 @@ def export_note_pdf(
     ] = False,
 ) -> Exported:
     """Save a note as a PDF file: each page drawn as in notability_get_page_image (ink and
-    shapes and typed text over the page's PDF or paper, pasted images), each page scaled so
-    its short edge is 612 pt like the app's own export. The pages are images, so their text
-    isn't selectable. Files in Desktop or Documents sync to iCloud if
+    shapes and typed text over the page's PDF or paper, pasted images), each page at its size
+    in the note, like the Mac app's own export. The pages are images, so their text isn't
+    selectable. Files in Desktop or Documents sync to iCloud if
     that's on.
     """
     con = _db()

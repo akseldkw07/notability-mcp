@@ -412,20 +412,18 @@ def _restyle(style: Style, p: "_Table") -> Style:
     return replace(style, **changes) if changes else style
 
 
-def last_page_with_content(pages: list[Page]) -> int:
-    """Number of the last page with ink, shapes, images or an imported PDF page (at least 1).
-    Notes often end with an empty page the app adds as you write; its own export leaves it
-    out. Such a page may repeat a template PDF page, so a PDF page only counts the first time
-    it appears in the note."""
-    seen: set[tuple[str, int]] = set()
-    last = 1
-    for p in pages:
-        new_pdf = p.pdf is not None and (p.pdf.asset, p.pdf.index) not in seen
-        if p.pdf:
-            seen.add((p.pdf.asset, p.pdf.index))
-        if p.inks or p.shapes or p.blocks or new_pdf:
-            last = p.number
-    return last
+def exported_page_count(pages: list[Page], with_text: set[int] | frozenset = frozenset()) -> int:
+    """How many pages the app's own export has: all of them, less the last if it's empty (the
+    page the app adds as you write; earlier empty pages stay). A page is empty without ink,
+    shapes, images, typed text (`with_text`: page numbers) or a PDF page of its own: a page
+    repeating a template PDF page seen earlier in the note is empty."""
+    if len(pages) < 2:
+        return len(pages)
+    last = pages[-1]
+    earlier = {(p.pdf.asset, p.pdf.index) for p in pages[:-1] if p.pdf}
+    own_pdf = last.pdf is not None and (last.pdf.asset, last.pdf.index) not in earlier
+    empty = not (last.inks or last.shapes or last.blocks or own_pdf or last.number in with_text)
+    return len(pages) - 1 if empty else len(pages)
 
 
 def _definition(
