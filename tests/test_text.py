@@ -101,3 +101,28 @@ def test_on_lined_paper_text_needs_room_above_the_page_bottom():
     assert list(body_spans(blank_last)) == [2]  # a blank line took the last one
     assert list(body_spans(text_last)) == [2]  # text skips it for the next page
     assert body_spans(text_last)[2][0].baseline == pytest.approx(slots[0] - text.SNAP_RAISE * 14)
+
+
+def test_tabs_go_to_the_next_stop_from_the_line_start():
+    n = note("\t1\tfirst")
+
+    one, first = body_spans(n)[1]
+
+    assert one.x == 36 + text.TAB_STOP
+    assert first.x == 36 + 2 * text.TAB_STOP
+
+
+def test_body_text_wraps_around_a_pasted_image():
+    from notability_mcp.bundle import IMAGE_BLOCK
+
+    image = Block((1, 1, 0), IMAGE_BLOCK, 0, (36.0, 30.0), (200.0, 100.0), (1.0, 1.0), 0.0,
+                  "ab" * 64, None)  # fmt: skip
+    page = Page(1, (1, 1, 0), 612, 792, blocks=[image])
+    n = note("word " * 60, [page])
+
+    spans = body_spans(n)[1]
+
+    beside = [s for s in spans if s.baseline < 130]  # lines level with the image
+    below = [s for s in spans if s.baseline > 150]
+    assert beside and min(s.x for s in beside) >= 236  # to the right of the image
+    assert below and min(s.x for s in below) == 36  # back at the margin under it

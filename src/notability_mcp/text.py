@@ -20,7 +20,7 @@ from pathlib import Path
 
 from PIL import ImageDraw, ImageFont
 
-from notability_mcp.bundle import TEXT_BLOCK, Block, Note, Page, Run, Style
+from notability_mcp.bundle import IMAGE_BLOCK, TEXT_BLOCK, Block, Note, Page, Run, Style
 
 GLYPH_SCALE = 1.0  # glyphs at the style's size
 # Line height and the baseline's depth below the line's top, in font sizes, measured on the
@@ -30,6 +30,7 @@ LINE_HEIGHT = {"Inter": 1.7}
 BASELINE_DEPTH = {"Inter": 1.071, "Helvetica Neue": 1.0}
 INDENT_STEP = 25.0  # points per paragraph indent level
 SNAP_RAISE = 0.12  # on lined paper, the baseline sits this many font sizes above the line
+TAB_STOP = 18.0  # points between tab stops, from the line's start
 
 TEXT_COLOR = (0, 0, 0, 255)
 
@@ -142,21 +143,29 @@ def wrap(paragraph: Paragraph, default: tuple[str, float], width: float) -> list
     for text, style in paragraph:
         font = _resolve(style, default)
         for word in _words(text):
-            w = text_width(word, font)
             # trailing spaces may hang past the margin
-            if x > 0 and x + text_width(word.rstrip(" "), font) > width:
+            if x > 0 and advance(word.rstrip(" "), font, x) > width:
                 lines.append([])
                 x = 0.0
-            while w > width and len(word) > 1:  # break an over-long word
+            while advance(word, font, 0.0) > width and len(word) > 1:  # an over-long word
                 cut = _fit(word, font, width - x)
                 lines[-1].append((word[:cut], style, font))
                 lines.append([])
                 x, word = 0.0, word[cut:]
-                w = text_width(word, font)
             if word:
                 lines[-1].append((word, style, font))
-                x += w
+                x = advance(word, font, x)
     return lines
+
+
+def advance(text: str, font: Font, x: float) -> float:
+    """Where text set from `x` (points from the line's start) ends: a tab goes on to the next
+    TAB_STOP."""
+    for i, part in enumerate(text.split("\t")):
+        if i:
+            x = (x // TAB_STOP + 1) * TAB_STOP
+        x += text_width(part, font)
+    return x
 
 
 def _words(text: str) -> list[str]:
@@ -185,18 +194,25 @@ def _tallest(line: Line, paragraph: Paragraph, default: tuple[str, float]) -> Fo
 
 def _spans(line: Line, x: float, baseline: float, width: float, align: int) -> list[Span]:
     """Place a line's pieces from `x` (or centred / right-aligned in `width`)."""
-    natural = sum(text_width(t, f) for t, _, f in line[:-1])
-    if line:
-        natural += text_width(line[-1][0].rstrip(" "), line[-1][2])
+    natural = 0.0
+    for i, (text, _, font) in enumerate(line):
+        natural = advance(text.rstrip(" ") if i == len(line) - 1 else text, font, natural)
+    start = x
     if align == 2:
-        x += (width - natural) / 2
+        start += (width - natural) / 2
     elif align == 3:
-        x += width - natural
+        start += width - natural
     out = []
+    rel = 0.0  # from the line's start, where tab stops are counted
     for text, style, font in line:
         color = style.color or TEXT_COLOR
-        out.append(Span(x, baseline, text, font, color, style.underline, style.strikethrough))
-        x += text_width(text, font)
+        for i, part in enumerate(text.split("\t")):
+            if i:
+                rel = (rel // TAB_STOP + 1) * TAB_STOP
+            if part:
+                out.append(Span(start + rel, baseline, part, font, color, style.underline,
+                                style.strikethrough))  # fmt: skip
+            rel += text_width(part, font)
     return out
 
 
@@ -217,12 +233,14 @@ class _Cursor:
         self.y = self.top
         paper = page.paper
         self.slots: list[float] | None = None
+        self.ruled = False
         # text always sits on lined paper's lines; on squared paper, when the note says so
         lined = paper is not None and (
             paper.flair == 0 or (paper.flair == 2 and note.align_to_lines)
         )
         if paper and lined and (paper.spacing or 0) > 1:
             sp = paper.spacing or 0.0
+            self.ruled = paper.flair == 0  # lined; squared paper uses its last line too
             last = page.height - self.bottom
             first = self.top + sp  # a whole line's room above it (as the Mac app lays it out)
             self.slots = [y for y in rulings(page.height, sp) if first <= y <= last]
@@ -233,14 +251,14 @@ class _Cursor:
 
     def next(self, font: Font, text: bool = True) -> float | None:
         """The baseline for a line whose tallest font is `font`, or None when the page is
-        full. On lined paper a line with `text` also needs room below it: the app moves it to
-        the next page rather than onto a line close to the page's bottom (an empty line may
-        take that line)."""
+        full. On lined (not squared) paper a line with `text` also needs room below it: the
+        app moves it to the next page rather than onto a line close to the page's bottom (an
+        empty line may take that line)."""
         if self.slots is not None:
             if not self.slots:
                 return None
             room = self.page.height - self.bottom - self.slots[0]
-            if text and room < font.size:  # measured: 6.6 pt is too little, 17 enough
+            if text and self.ruled and room < font.size:  # 6.6 pt is too little, 17 enough
                 return None
             return self.slots.pop(0) - SNAP_RAISE * font.size
         height = line_height(font)
@@ -252,8 +270,9 @@ class _Cursor:
 
 
 def body_spans(note: Note) -> dict[int, list[Span]]:
-    """The body text placed on the note's pages, by page number. Each paragraph wraps to the
-    width of the page it starts on, less its indent."""
+    """The body text placed on the note's pages, by page number. Each line runs from the left
+    margin (plus the paragraph's indent) to the right margin, around any pasted image it
+    crosses (the app wraps text around images: what fits left of one, then right of it)."""
     out: dict[int, list[Span]] = {}
     if not note.body or not note.pages:
         return out
@@ -262,18 +281,104 @@ def body_spans(note: Note) -> dict[int, list[Span]]:
     for paragraph in paragraphs(note.body):
         style = paragraph[0][1]
         indent = INDENT_STEP * style.indent
-        width = cursor.width - indent
-        for line in wrap(paragraph, note.font, width):
-            tallest = _tallest(line, paragraph, note.font)
-            while (baseline := cursor.next(tallest, bool(line))) is None:
+        pieces = [
+            (word, st, font)
+            for text, st in paragraph
+            for font in [_resolve(st, note.font)]
+            for word in _words(text)
+        ]
+        while True:
+            # the line's height: from the words it would hold across the whole width
+            width = cursor.width - indent
+            guess = wrap([(w, st) for w, st, _ in pieces], note.font, width)[0] if pieces else []
+            tallest = _tallest(guess, paragraph, note.font)
+            while (baseline := cursor.next(tallest, bool(pieces))) is None:
                 page = next(pages, None)
                 if page is None:
                     return out  # the app adds pages as text grows; the log has them all
                 cursor = _Cursor(note, page)
-            if line:
-                x = cursor.left + indent
-                spans = _spans(line, x, baseline, width, style.align)
-                out.setdefault(cursor.page.number, []).extend(spans)
+            if not pieces:
+                break  # an empty paragraph is one empty line
+            left, right = cursor.left + indent, cursor.page.width - cursor.right
+            gaps = _gaps(cursor.page, left, right, baseline, tallest)
+            spans, pieces = _fill(pieces, gaps, left, right, baseline, style.align)
+            out.setdefault(cursor.page.number, []).extend(spans)
+            if not pieces:
+                break
+    return out
+
+
+def _gaps(
+    page: Page, left: float, right: float, baseline: float, font: Font
+) -> list[tuple[float, float]]:
+    """The stretches of a line, from `left` to `right`, that no pasted image covers."""
+    gaps = [(left, right)]
+    top, bottom = baseline - font.size, baseline + 0.3 * font.size
+    for block in page.blocks:
+        if block.kind != IMAGE_BLOCK:
+            continue
+        (x, y), (w, h) = block.origin, block.size
+        x1, y1 = x + w * abs(block.scale[0] or 1.0), y + h * abs(block.scale[1] or 1.0)
+        if y1 <= top or y >= bottom:
+            continue
+        gaps = [
+            part
+            for a, b in gaps
+            for part in ((a, min(b, x)), (max(a, x1), b))
+            if part[1] - part[0] > 1
+        ]
+    return gaps
+
+
+def _fill(
+    pieces: list[Piece],
+    gaps: list[tuple[float, float]],
+    left: float,
+    right: float,
+    baseline: float,
+    align: int,
+) -> tuple[list[Span], list[Piece]]:
+    """Set words on one line, in its gaps from left to right; returns the spans and the words
+    left for the next line. A word wider than a clear line is broken."""
+    spans: list[Span] = []
+    rest = list(pieces)
+    for a, b in gaps:
+        x = a
+        while rest:
+            word, style, font = rest[0]
+            if left + advance(word.rstrip(" "), font, x - left) > b:
+                if x == a and (a, b) == (left, right) and len(word) > 1:  # too long for a line
+                    cut = _fit(word, font, b - a)
+                    spans.extend(_place(word[:cut], style, font, x, left, baseline))
+                    rest[0] = (word[cut:], style, font)
+                break
+            spans.extend(_place(word, style, font, x, left, baseline))
+            x = left + advance(word, font, x - left)
+            rest.pop(0)
+        if not rest or (a, b) == (left, right):
+            break
+    if align in (2, 3) and gaps == [(left, right)] and spans:
+        natural = max(sp.x + text_width(sp.text.rstrip(" "), sp.font) for sp in spans) - left
+        shift = (right - left - natural) / (2 if align == 2 else 1)
+        for sp in spans:
+            sp.x += shift
+    return spans, rest
+
+
+def _place(
+    word: str, style: Style, font: Font, x: float, left: float, baseline: float
+) -> list[Span]:
+    """Spans for a word set from `x`, tabs moving on to the next stop from the line's start."""
+    out = []
+    color = style.color or TEXT_COLOR
+    rel = x - left
+    for i, part in enumerate(word.split("\t")):
+        if i:
+            rel = (rel // TAB_STOP + 1) * TAB_STOP
+        if part:
+            out.append(Span(left + rel, baseline, part, font, color, style.underline,
+                            style.strikethrough))  # fmt: skip
+        rel += text_width(part, font)
     return out
 
 
