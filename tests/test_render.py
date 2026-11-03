@@ -24,7 +24,9 @@ def test_highlighter_tints_white_paper_and_leaves_dark_pdf_text_dark(ink_note: N
     on_paper = Image.open(io.BytesIO(render_page(page, max_edge=792)))
 
     page.pdf = PdfPage("ab" * 64, 0)
-    monkeypatch.setattr(pdf, "render", lambda data, index, size: Image.new("RGB", size, "black"))
+    monkeypatch.setattr(
+        pdf, "render", lambda data, index, size, **_: Image.new("RGB", size, "black")
+    )
     on_text = Image.open(io.BytesIO(render_page(page, max_edge=792, background=b"pdf")))
 
     paper = on_paper.convert("RGB").tobytes()
@@ -94,3 +96,15 @@ def test_paper_is_cream_with_a_centred_grid_and_legacy_13_is_plain_white():
     page.paper = Paper(flair=2, spacing=36.0, legacy=13)
     white = Image.open(io.BytesIO(render_page(page, max_edge=792))).convert("RGB")
     assert white.getpixel((30, 50)) == (255, 255, 255)
+
+
+def test_tape_is_left_out_like_the_apps_export():
+    from notability_mcp.bundle import LINE, Shape
+
+    tape = Shape((1, 1, 0), LINE, (100.0, 100.0), (1.0, 1.0), 0.0, [(0, 0), (300, 0)], (0, 0),
+                 (229, 245, 255, 255), 30.0, None, 3, 1)  # fmt: skip
+    page = Page(1, (1, 1, 0), 612, 792, shapes=[tape])
+
+    img = Image.open(io.BytesIO(render_page(page, max_edge=792))).convert("RGB")
+
+    assert img.getpixel((250, 100)) == (255, 255, 255)

@@ -4,6 +4,7 @@ import io
 import itertools
 import math
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 
 from PIL import Image, ImageChops, ImageDraw
 
@@ -18,6 +19,8 @@ from notability_mcp.bundle import (
     Shape,
     decode_path,
 )
+from notability_mcp.text import Span, rulings
+from notability_mcp.text import draw as draw_text
 
 type Point = tuple[float, float]
 
@@ -26,6 +29,8 @@ _SUPERSAMPLE = 2  # draw at 2x, then downscale: cheap antialiasing
 PAPER_TINT = (251, 248, 242)  # the app's paper texture, averaged
 PAPER_LINE = (194, 192, 183)
 PAPER_LINE_WIDTH = 0.5
+PENCIL, TAPE = 1, 3  # CreateInk / CreateShape tools
+PENCIL_ALPHA = 140  # of 255
 
 
 def render_page(
@@ -33,14 +38,15 @@ def render_page(
     max_edge: int = MAX_EDGE,
     background: bytes | None = None,
     image: Callable[[str], bytes | None] | None = None,
+    text: list[Span] | None = None,
+    spill: list[Ink | Shape] | None = None,
 ) -> bytes:
-    """PNG of the page's ink, long edge `max_edge` px, over `background` (the page's PDF) or white,
-    with pasted images when `image` (SHA-512 -> file bytes) is given.
-
-    Typed text is not drawn.
+    """PNG of the page's ink and shapes, long edge `max_edge` px, over `background` (the page's
+    PDF) or its paper, with pasted images when `image` (SHA-512 -> file bytes) is given and
+    typed text (`text`, from text.page_spans).
     """
     out = io.BytesIO()
-    render_image(page, max_edge, background, image).save(out, "PNG", optimize=True)
+    render_image(page, max_edge, background, image, text, spill).save(out, "PNG", optimize=True)
     return out.getvalue()
 
 
@@ -49,48 +55,87 @@ def render_image(
     max_edge: int = MAX_EDGE,
     background: bytes | None = None,
     image: Callable[[str], bytes | None] | None = None,
+    text: list[Span] | None = None,
+    spill: list[Ink | Shape] | None = None,
 ) -> Image.Image:
-    """The page drawn as in render_page, as an RGB image."""
+    """The page drawn as in render_page, as an RGB image; `spill`: ink and shapes from the
+    pages around it that run onto it (see spill_onto)."""
     k = max_edge / max(page.width, page.height)
     size = (round(page.width * k), round(page.height * k))
     s = k * _SUPERSAMPLE
     canvas = (size[0] * _SUPERSAMPLE, size[1] * _SUPERSAMPLE)
     img = Image.new("RGB", canvas, "white")
-    if background and page.pdf and (drawn := pdf.render(background, page.pdf.index, canvas)):
-        img.paste(drawn)
-    elif page.paper:
-        _draw_paper(img, page.paper, s)
+    drawn = None
+    if background and page.pdf:
+        drawn = pdf.render(background, page.pdf.index, canvas, transparent=True)
+    if page.paper:  # under a PDF page too: the app shows its paper through the PDF
+        _draw_paper(img, page.paper, s, pattern=drawn is None)
+    if drawn:
+        img.paste(drawn, (0, 0), drawn if drawn.mode == "RGBA" else None)
     if image:
         for block in page.blocks:
             _paste_image(img, block, image, s)
-    marks = [*page.inks, *page.shapes]
-    if highlights := [m for m in marks if m.tool == HIGHLIGHTER]:
+    if text:
+        draw_text(ImageDraw.Draw(img), text, s)
+    # tape (study tape, tapped to reveal what's under it) is left out, as in the app's export
+    marks = [m for m in (*page.inks, *page.shapes, *(spill or [])) if m.tool != TAPE]
+    # highlighter and pencil are see-through: multiplied in, so what's under them shows
+    if highlights := [m for m in marks if m.tool in (HIGHLIGHTER, PENCIL)]:
         # multiplied in, like a real highlighter: the PDF text under it stays legible
         layer = Image.new("RGB", canvas, "white")
         _draw(layer, highlights, s)
         img = ImageChops.multiply(img, layer)
-    _draw(img, [m for m in marks if m.tool != HIGHLIGHTER], s)
+    _draw(img, [m for m in marks if m.tool not in (HIGHLIGHTER, PENCIL)], s)
     return img.resize(size, Image.Resampling.LANCZOS)
 
 
-def _draw_paper(img: Image.Image, paper: Paper, s: float) -> None:
-    """Fill the paper's colour and draw its lines, dots or grid, as measured on the app's own
-    PDF exports: the paper is a cream texture (about PAPER_TINT) tinted by its colour, except
-    legacy paper 13, which is plain white; the pattern is laid out so the page's centre falls
-    mid-cell."""
+def _bounds(mark: Ink | Shape) -> tuple[float, float]:
+    """The mark's top and bottom on its page, in points."""
+    if isinstance(mark, Shape):
+        ys = [y for _, y in _outline(mark)]
+    else:
+        ys = [y for line, _ in _polylines(mark) for _, y in line]
+    return (min(ys), max(ys)) if ys else (0.0, 0.0)
+
+
+def spill_onto(pages: list[Page], number: int) -> list[Ink | Shape]:
+    """Ink and shapes of the pages before and after page `number` that run past their own page
+    onto it, moved into its space. The app's canvas is continuous: a line drawn past the
+    bottom of a page shows at the top of the next one (pages touch, with no gap)."""
+    out: list[Ink | Shape] = []
+    here = number - 1
+    for i in (here - 1, here + 1):
+        if not 0 <= i < len(pages):
+            continue
+        other = pages[i]
+        above = i < here
+        shift = -other.height if above else pages[here].height  # page i's top, in this space
+        for mark in [*other.inks, *other.shapes]:
+            top, bottom = _bounds(mark)
+            if (above and bottom > other.height) or (not above and top < 0):
+                ox, oy = mark.origin
+                out.append(replace(mark, origin=(ox, oy + shift)))
+    return out
+
+
+def _draw_paper(img: Image.Image, paper: Paper, s: float, pattern: bool = True) -> None:
+    """Fill the paper's colour and (with `pattern`) draw its lines, dots or grid, as measured
+    on the app's own PDF exports: the paper is a cream texture (about PAPER_TINT) tinted by its
+    colour, except legacy paper 13, which is plain white; the pattern is laid out so the
+    page's centre falls mid-cell."""
     if paper.legacy != 13:
         r, g, b, _ = paper.color or (255, 255, 255, 255)
         tint = tuple(c * t // 255 for c, t in zip((r, g, b), PAPER_TINT, strict=True))
         img.paste(tint, (0, 0, *img.size))
+    if not pattern:
+        return
     if paper.flair not in (0, 1, 2) or not paper.spacing or paper.spacing <= 1:
         return
     w, h = img.size
-    step = paper.spacing * s
-    inset = 0.0 if paper.bleeds else 36 * s  # default margins: the Margins table isn't read
+    inset = 0.0 if paper.bleeds else 36 * s  # default margins
 
     def ticks(length: float) -> list[float]:
-        first = (length / 2 - step / 2) % step
-        return [first + i * step for i in range(int((length - first) / step) + 1)]
+        return [t * s for t in rulings(length / s, paper.spacing or 0.0)]
 
     xs = [x for x in ticks(w) if inset <= x <= w - inset]
     ys = [y for y in ticks(h) if inset <= y <= h - inset]
@@ -128,7 +173,9 @@ def _draw(img: Image.Image, marks: list[Ink | Shape], s: float) -> None:
 
 def _color(rgba: tuple[int, int, int, int], tool: int) -> tuple[int, int, int]:
     r, g, b, a = rgba
-    if tool == HIGHLIGHTER:  # its translucency, as the color it gives on white paper
+    if tool == PENCIL:  # graphite: measured on the app's export, about 55% of its colour
+        a = PENCIL_ALPHA
+    if tool in (HIGHLIGHTER, PENCIL):  # its translucency, as the color it gives on white paper
         return (255 - (255 - r) * a // 255, 255 - (255 - g) * a // 255, 255 - (255 - b) * a // 255)
     return (r, g, b)
 
@@ -144,16 +191,8 @@ def _outline(shape: Shape) -> list[Point]:
     """The shape as a polyline on the page (closed for polygons and ellipses)."""
     f = _transform(shape)
     match shape.kind:
-        case bundle.LINE if len(shape.points) == 4:  # a curve: cubic through two control points
-            start, *rest = shape.points
-            pts = [start]
-            for i in range(1, 17):
-                t = i / 16
-                pts.append(tuple(  # type: ignore[arg-type]
-                    (1 - t) ** 3 * start[k] + 3 * (1 - t) ** 2 * t * rest[0][k]
-                    + 3 * (1 - t) * t * t * rest[1][k] + t**3 * rest[2][k]
-                    for k in (0, 1)
-                ))  # fmt: skip
+        case bundle.LINE if len(shape.points) > 2:  # a curve through its control points
+            pts = [_bezier(shape.points, i / 16) for i in range(17)]
         case bundle.LINE:
             pts = list(shape.points)
         case bundle.POLYGON:
@@ -165,6 +204,16 @@ def _outline(shape: Shape) -> list[Point]:
         case _:
             pts = []
     return [f(x, y) for x, y in pts]
+
+
+def _bezier(points: list[Point], t: float) -> Point:
+    """The point at `t` on the Bézier curve with these control points (de Casteljau)."""
+    while len(points) > 1:
+        points = [
+            ((1 - t) * a[0] + t * b[0], (1 - t) * a[1] + t * b[1])
+            for a, b in itertools.pairwise(points)
+        ]
+    return points[0]
 
 
 def _dashes(line: list[Point], style: int, width: int) -> Iterator[list[Point]]:
