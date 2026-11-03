@@ -29,7 +29,7 @@ _SUPERSAMPLE = 2  # draw at 2x, then downscale: cheap antialiasing
 PAPER_TINT = (251, 248, 242)  # the app's paper texture, averaged
 PAPER_LINE = (194, 192, 183)
 PAPER_LINE_WIDTH = 0.5
-PENCIL = 1  # CreateInk / CreateShape tool
+PENCIL, TAPE = 1, 3  # CreateInk / CreateShape tools
 PENCIL_ALPHA = 140  # of 255
 
 
@@ -77,7 +77,8 @@ def render_image(
             _paste_image(img, block, image, s)
     if text:
         draw_text(ImageDraw.Draw(img), text, s)
-    marks = [*page.inks, *page.shapes, *(spill or [])]
+    # tape (study tape, tapped to reveal what's under it) is left out, as in the app's export
+    marks = [m for m in (*page.inks, *page.shapes, *(spill or [])) if m.tool != TAPE]
     # highlighter and pencil are see-through: multiplied in, so what's under them shows
     if highlights := [m for m in marks if m.tool in (HIGHLIGHTER, PENCIL)]:
         # multiplied in, like a real highlighter: the PDF text under it stays legible
