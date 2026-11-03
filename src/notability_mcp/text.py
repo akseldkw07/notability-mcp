@@ -30,6 +30,7 @@ LINE_HEIGHT = {"Inter": 1.7}
 BASELINE_DEPTH = {"Inter": 1.071, "Helvetica Neue": 1.0}
 INDENT_STEP = 25.0  # points per paragraph indent level
 SNAP_RAISE = 0.12  # on lined paper, the baseline sits this many font sizes above the line
+
 TEXT_COLOR = (0, 0, 0, 255)
 
 _APP_FONTS = Path("/Applications/Notability.app/Contents/Resources")
@@ -230,11 +231,18 @@ class _Cursor:
     def width(self) -> float:
         return self.page.width - self.left - self.right
 
-    def next(self, font: Font) -> float | None:
+    def next(self, font: Font, text: bool = True) -> float | None:
         """The baseline for a line whose tallest font is `font`, or None when the page is
-        full."""
+        full. On lined paper a line with `text` also needs room below it: the app moves it to
+        the next page rather than onto a line close to the page's bottom (an empty line may
+        take that line)."""
         if self.slots is not None:
-            return self.slots.pop(0) - SNAP_RAISE * font.size if self.slots else None
+            if not self.slots:
+                return None
+            room = self.page.height - self.bottom - self.slots[0]
+            if text and room < font.size:  # measured: 6.6 pt is too little, 17 enough
+                return None
+            return self.slots.pop(0) - SNAP_RAISE * font.size
         height = line_height(font)
         if self.y + height > self.page.height - self.bottom and self.y > self.top:
             return None
@@ -257,7 +265,7 @@ def body_spans(note: Note) -> dict[int, list[Span]]:
         width = cursor.width - indent
         for line in wrap(paragraph, note.font, width):
             tallest = _tallest(line, paragraph, note.font)
-            while (baseline := cursor.next(tallest)) is None:
+            while (baseline := cursor.next(tallest, bool(line))) is None:
                 page = next(pages, None)
                 if page is None:
                     return out  # the app adds pages as text grows; the log has them all

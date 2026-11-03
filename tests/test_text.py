@@ -87,3 +87,17 @@ def test_text_boxes_are_placed_on_their_page_and_drawn():
     assert 98 <= left <= 104 and top >= 395 and bottom <= 420 and right > 150
     r, g, b = img.getpixel(((left + right) // 2, (top + bottom) // 2 + 2))  # type: ignore[misc]
     assert r > g and r > b  # red text
+
+
+def test_on_lined_paper_text_needs_room_above_the_page_bottom():
+    paper = Paper(flair=0, spacing=40.0, bleeds=False)
+    pages = [Page(i, (1, 1, i), 612, 850, paper=paper, margins=(0, 0, 20, 20)) for i in (1, 2)]
+    slots = [y for y in rulings(850, 40) if 40 <= y <= 850]
+    assert 850 - slots[-1] < 14  # the last line is too close to the bottom for 14 pt text
+
+    blank_last = note("\n" * (len(slots) - 1) + "\nnext", pages, align_to_lines=True)
+    text_last = note("\n" * (len(slots) - 1) + "last", pages, align_to_lines=True)
+
+    assert list(body_spans(blank_last)) == [2]  # a blank line took the last one
+    assert list(body_spans(text_last)) == [2]  # text skips it for the next page
+    assert body_spans(text_last)[2][0].baseline == pytest.approx(slots[0] - text.SNAP_RAISE * 14)
