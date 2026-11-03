@@ -33,8 +33,11 @@ def page_sizes(data: bytes) -> list[tuple[float, float]]:
             doc.close()
 
 
-def render(data: bytes, index: int, size: tuple[int, int]) -> Image.Image | None:
-    """Page `index` (0-based) drawn at `size` pixels; None if the PDF has no such page."""
+def render(
+    data: bytes, index: int, size: tuple[int, int], transparent: bool = False
+) -> Image.Image | None:
+    """Page `index` (0-based) drawn at `size` pixels, on white or (`transparent`) as RGBA on
+    nothing; None if the PDF has no such page."""
     with _lock:
         doc = pdfium.PdfDocument(data)
         try:
@@ -44,7 +47,10 @@ def render(data: bytes, index: int, size: tuple[int, int]) -> Image.Image | None
             if width <= 0 or height <= 0:
                 return None
             # fit both edges, so an odd page shape can't make a huge bitmap
-            bitmap = doc[index].render(scale=min(size[0] / width, size[1] / height))
+            bitmap = doc[index].render(
+                scale=min(size[0] / width, size[1] / height),
+                fill_color=(255, 255, 255, 0 if transparent else 255),
+            )
             image = bitmap.to_pil().copy()  # to_pil may share the bitmap's buffer
             bitmap.close()
         finally:

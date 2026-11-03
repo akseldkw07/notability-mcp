@@ -1,6 +1,14 @@
 from pathlib import Path
 
-from notability_mcp.bundle import Note, PdfPage, _page, decode_bundle, decode_local, linearize
+from notability_mcp.bundle import (
+    HIGHLIGHTER,
+    Note,
+    PdfPage,
+    _page,
+    decode_bundle,
+    decode_local,
+    linearize,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -57,3 +65,66 @@ def test_without_a_background_size_the_crop_box_is_the_page():
     page = _page(1, (1, 1, 0), {"pdf": ("ab" * 64, 0, [(363.0, 272.0)])})
 
     assert (page.width, page.height) == (363.0, 272.0)
+
+
+def test_shapes_land_on_their_page_with_moves_and_deletes_applied():
+    from appindex_files import change_log_with_shapes
+
+    from notability_mcp.bundle import ELLIPSE, LINE, POLYGON
+
+    [page] = decode_local("n", change_log_with_shapes()).pages
+
+    line, ellipse, rect = page.shapes
+    assert (line.kind, line.origin, line.points, line.width) == (
+        LINE, (100.0, 100.0), [(0.0, 0.0), (200.0, 0.0)], 2.0)  # fmt: skip
+    assert (ellipse.kind, ellipse.origin, ellipse.size) == (ELLIPSE, (200.0, 300.0), (100.0, 50.0))
+    assert ellipse.color == (255, 0, 0, 255)
+    assert (rect.kind, rect.tool, rect.fill) == (POLYGON, HIGHLIGHTER, (255, 255, 0, 102))
+    assert len(rect.points) == 4
+
+
+def test_the_apps_export_leaves_out_only_a_last_empty_page():
+    from notability_mcp.bundle import Page, Shape, exported_page_count
+
+    def page(n: int, **kw) -> Page:
+        return Page(n, (1, 1, n), 612, 792, **kw)
+
+    shape = Shape(None, 1, (0, 0), (1, 1), 0, [], (0, 0), (0, 0, 0, 255), 1, None, 0, 1)
+    pdf = PdfPage("ab" * 64, 0)
+    # an empty page in the middle stays; only the last goes
+    assert exported_page_count([page(1, shapes=[shape]), page(2), page(3)]) == 2
+    assert exported_page_count([page(1), page(2, pdf=pdf)]) == 2  # its own PDF page
+    assert exported_page_count([page(1)]) == 1  # an empty note still has a page
+
+
+def test_typed_text_keeps_its_styles_paragraphs_and_text_boxes():
+    from appindex_files import change_log_with_text
+
+    from notability_mcp.bundle import TEXT_BLOCK, Style
+
+    note = decode_local("n", change_log_with_text())
+
+    assert (note.font, note.align_to_lines) == (("Inter", 12.0), True)
+    assert [(r.text, r.style) for r in note.body] == [
+        ("Hello ", Style()),
+        ("world", Style(bold=True)),
+        ("\n", Style()),
+        ("second", Style(indent=2)),
+    ]
+    [box] = note.pages[0].blocks
+    assert box.kind == TEXT_BLOCK and [r.text for r in box.text] == ["boxed"]
+    assert note.text == "Hello world\nsecond\n\nboxed"
+
+
+def test_a_one_page_template_pdf_repeats_on_every_page():
+    bg = {"size": (612.0, 792.0), "pdf": ("ab" * 64, 0, [(612.0, 792.0)])}
+
+    assert _page(2, (1, 1, 1), bg).pdf == PdfPage("ab" * 64, 0)
+
+
+def test_a_repeated_template_page_is_not_content():
+    from notability_mcp.bundle import Page, exported_page_count
+
+    template = PdfPage("ab" * 64, 0)
+    pages = [Page(1, (1, 1, 0), 612, 792, pdf=template), Page(2, (1, 2, 0), 612, 792, pdf=template)]
+    assert exported_page_count(pages) == 1

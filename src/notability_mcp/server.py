@@ -19,9 +19,10 @@ from mcp.types import ToolAnnotations
 from PIL import Image as PILImage
 from pydantic import BaseModel, Field
 
-from notability_mcp import local, pdf, store
+from notability_mcp import export, local, pdf, store
 from notability_mcp.bundle import Note, decode_bundle, decode_local
-from notability_mcp.render import MAX_EDGE, render_image, render_page
+from notability_mcp.render import MAX_EDGE, render_page, spill_onto
+from notability_mcp.text import page_spans
 from notability_mcp.untrusted import create_fence, neutralize_text
 
 # Handwriting text is OCR, PDFs and transcripts come from elsewhere, and titles are whatever a
@@ -353,19 +354,23 @@ def get_page_image(
     """One note page as a PNG, to read handwriting, math and drawings exactly as written.
 
     Prefer this over OCR text whenever accuracy matters. Draws the ink over the page's PDF, if
-    any, and pasted images (local source); shapes and typed text are not shown.
+    any, with typed text and pasted images (local source).
     """
     con = _db()
     note = _note(con, note_id)
     bundle = store.note_bundle(con, note_id)
     if not bundle:
         raise ToolError("This note's content isn't synced yet. Ask the user to run sync.")
-    pages = _decode(con, note_id, bundle).pages
+    decoded = _decode(con, note_id, bundle)
+    pages = decoded.pages
     if page > len(pages):
         raise ToolError(f"{note.title!r} has {len(pages)} pages; ask for 1-{len(pages)}.")
     target = pages[page - 1]
     background = store.asset(con, target.pdf.asset) if target.pdf else None
-    return Image(data=render_page(target, max_edge, background, _image), format="png")
+    spans = page_spans(decoded, target)
+    spill = spill_onto(pages, page)
+    png = render_page(target, max_edge, background, _image, spans, spill)
+    return Image(data=png, format="png")
 
 
 def _image(sha512: str) -> bytes | None:
@@ -609,7 +614,6 @@ def status() -> Status:
 WRITE_FILE = ToolAnnotations(
     read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False
 )
-EXPORT_DPI = 150
 
 
 def export_roots() -> list[Path]:
@@ -685,42 +689,35 @@ def export_note_pdf(
             "the note. Must be inside the user's allowed export folders."
         ),
     ] = None,
-    pages: Annotated[str | None, Field(description="e.g. '1-3,7'; default: every page")] = None,
+    pages: Annotated[
+        str | None,
+        Field(
+            description="e.g. '1-3,7'; default: every page, less the empty ones at the end "
+            "(like the app's export)"
+        ),
+    ] = None,
     overwrite: Annotated[
         bool, Field(description="Replace an existing file; by default ' (2)' is added")
     ] = False,
 ) -> Exported:
-    """Save a note as a PDF file: each page drawn as in notability_get_page_image (ink over the
-    page's PDF, pasted images). Shapes and typed text aren't drawn, and the pages are images, so
-    their text isn't selectable. Files in Desktop or Documents sync to iCloud if that's on.
+    """Save a note as a PDF file: each page drawn as in notability_get_page_image (ink and
+    shapes and typed text over the page's PDF or paper, pasted images), each page at its size
+    in the note, like the Mac app's own export. The pages are images, so their text isn't
+    selectable. Files in Desktop or Documents sync to iCloud if
+    that's on.
     """
     con = _db()
     note = _note(con, note_id)
     bundle = store.note_bundle(con, note_id)
     if not bundle:
         raise ToolError("This note's content isn't synced yet. Ask the user to run sync.")
-    decoded = _decode(con, note_id, bundle).pages
-    numbers = _page_numbers(pages, len(decoded))
+    decoded = _decode(con, note_id, bundle)
+    numbers = _page_numbers(pages, len(decoded.pages)) if pages else export.default_pages(decoded)
     target = _export_path(path, note.title, overwrite)
     target.parent.mkdir(parents=True, exist_ok=True)
-
-    def rendered():
-        backgrounds: dict[str, bytes | None] = {}
-        for number in numbers:
-            page = decoded[number - 1]
-            background = None
-            if page.pdf:
-                if page.pdf.asset not in backgrounds:
-                    backgrounds[page.pdf.asset] = store.asset(con, page.pdf.asset)
-                background = backgrounds[page.pdf.asset]
-            edge = round(max(page.width, page.height) / 72 * EXPORT_DPI)
-            out = io.BytesIO()
-            render_image(page, edge, background, _image).save(out, "JPEG", quality=85)
-            yield out.getvalue(), page.width, page.height
-
     tmp = target.with_name(f".{target.name}.tmp")  # renamed into place: iCloud never syncs half
     try:
-        count = pdf.write_images(rendered(), tmp)
+        count = export.write_pdf(decoded, numbers, lambda h: store.asset(con, h), tmp, _image)
         tmp.replace(target)
     finally:
         tmp.unlink(missing_ok=True)

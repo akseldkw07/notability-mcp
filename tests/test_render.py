@@ -1,4 +1,5 @@
 import io
+from typing import cast
 
 from PIL import Image, ImageOps
 
@@ -23,7 +24,9 @@ def test_highlighter_tints_white_paper_and_leaves_dark_pdf_text_dark(ink_note: N
     on_paper = Image.open(io.BytesIO(render_page(page, max_edge=792)))
 
     page.pdf = PdfPage("ab" * 64, 0)
-    monkeypatch.setattr(pdf, "render", lambda data, index, size: Image.new("RGB", size, "black"))
+    monkeypatch.setattr(
+        pdf, "render", lambda data, index, size, **_: Image.new("RGB", size, "black")
+    )
     on_text = Image.open(io.BytesIO(render_page(page, max_edge=792, background=b"pdf")))
 
     paper = on_paper.convert("RGB").tobytes()
@@ -54,3 +57,54 @@ def test_pasted_images_are_cropped_scaled_and_placed():
     assert img.convert("RGB").getpixel((195, 325)) == (255, 255, 255)
     without = Image.open(io.BytesIO(render_page(page, 792)))
     assert without.convert("RGB").getpixel((250, 325)) == (255, 255, 255)
+
+
+def test_shapes_are_drawn_and_highlighter_shapes_tint_the_paper():
+    from appindex_files import change_log_with_shapes
+
+    from notability_mcp.bundle import decode_local
+
+    [page] = decode_local("n", change_log_with_shapes()).pages
+    img = Image.open(io.BytesIO(render_page(page, max_edge=792))).convert("RGB")
+
+    def px(xy: tuple[int, int]) -> tuple[int, ...]:
+        return cast(tuple[int, ...], img.getpixel(xy))
+
+    assert max(px((200, 100))) < 80  # the line, (100, 100) to (300, 100)
+    r, g, b = px((200, 325))  # the ellipse's left edge, at (200, 325) after its move
+    assert r > 200 and g < 80 and b < 80
+    assert px((250, 325)) == (255, 255, 255)  # not filled
+    r, g, b = px((200, 525))  # inside the highlighter rectangle
+    assert r == g == 255 and b < 200
+    assert px((200, 700)) == (255, 255, 255)  # the deleted line
+
+
+def test_paper_is_cream_with_a_centred_grid_and_legacy_13_is_plain_white():
+    from notability_mcp.bundle import Paper
+
+    # like a real note: 792 x 612, a 36 pt grid, no colour set
+    page = Page(1, (1, 1, 0), 792, 612, paper=Paper(flair=2, spacing=36.0, legacy=1))
+    img = Image.open(io.BytesIO(render_page(page, max_edge=792))).convert("RGB")
+
+    def px(xy: tuple[int, int]) -> tuple[int, ...]:
+        return cast(tuple[int, ...], img.getpixel(xy))
+
+    assert px((30, 50)) == (251, 248, 242)  # paper, inside a cell
+    assert max(px((18, 50))) < 230 and max(px((30, 36))) < 230  # a vertical and a horizontal line
+    assert px((36, 50)) == (251, 248, 242)  # no line at x = 36: the page centre is mid-cell
+
+    page.paper = Paper(flair=2, spacing=36.0, legacy=13)
+    white = Image.open(io.BytesIO(render_page(page, max_edge=792))).convert("RGB")
+    assert white.getpixel((30, 50)) == (255, 255, 255)
+
+
+def test_tape_is_left_out_like_the_apps_export():
+    from notability_mcp.bundle import LINE, Shape
+
+    tape = Shape((1, 1, 0), LINE, (100.0, 100.0), (1.0, 1.0), 0.0, [(0, 0), (300, 0)], (0, 0),
+                 (229, 245, 255, 255), 30.0, None, 3, 1)  # fmt: skip
+    page = Page(1, (1, 1, 0), 612, 792, shapes=[tape])
+
+    img = Image.open(io.BytesIO(render_page(page, max_edge=792))).convert("RGB")
+
+    assert img.getpixel((250, 100)) == (255, 255, 255)

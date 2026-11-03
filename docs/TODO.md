@@ -37,9 +37,25 @@ logs while it runs and syncs risks corrupting notes.
 
 ## Rendering
 
-- **Shapes and typed text** aren't drawn on page images or exports (ink, PDF pages and pasted
-  images are). Typed text needs the text runs' positions and styles from the change log; shapes
-  are `CreateShape` / `ModifyShape` ops.
+- **Exports should come from the app's own "Save as…", not from screen control.** Our renderer
+  approximates Notability (paper texture, typed text, line styles); the app's Save as… PDF is
+  exact. Prefer a way to trigger it without taking over the screen. As of Notability on
+  2026-11-03 there is none: its App Intents are only Select Note / Select Folder, and the
+  `notability://` URL scheme only opens notes. Watch for an export intent or Shortcuts action.
+  Driving the menu and save dialog (Accessibility permission, brings the app forward, breaks
+  when the UI changes) is the last resort; until then `export_note_pdf` renders.
+  `scripts/save_as.py` does drive the menu, but only as a dev tool: it saves the app's PDFs of
+  sample notes as references for `tests/test_parity.py`, which checks our export against them.
+- **Parity status** (17 app exports of real notes, 2026-11-03): all pass. Some rules rest on
+  few cases and are marked "measured" in `text.py`: on lined paper, which line near the page
+  bottom text may use (6.6 pt above it: no; 17 or 0: yes); the gap between an image and the
+  text beside it (the page margin, from one note). When a new note fails, save its reference
+  (`scripts/save_as.py --note <id>`) and adjust.
+- **Typed text calibration.** Measured on app exports: line height per font (Helvetica Neue's
+  own; Inter 1.7), baseline, page breaks, lined-paper snapping, indent, the app dropping a last
+  page that holds only text. Text boxes, centred / right alignment, lists (decorators are not
+  drawn), line spacing and highlight colour are guesses or missing: add references with them
+  (`scripts/save_as.py --note ...`) and tune `text.py` until the parity test passes.
 - **25 inked PDF pages** on a real library still have ink past the page edge after the
   page-size fix: look at one.
 
