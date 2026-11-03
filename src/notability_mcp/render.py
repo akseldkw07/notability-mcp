@@ -152,16 +152,8 @@ def _outline(shape: Shape) -> list[Point]:
     """The shape as a polyline on the page (closed for polygons and ellipses)."""
     f = _transform(shape)
     match shape.kind:
-        case bundle.LINE if len(shape.points) == 4:  # a curve: cubic through two control points
-            start, *rest = shape.points
-            pts = [start]
-            for i in range(1, 17):
-                t = i / 16
-                pts.append(tuple(  # type: ignore[arg-type]
-                    (1 - t) ** 3 * start[k] + 3 * (1 - t) ** 2 * t * rest[0][k]
-                    + 3 * (1 - t) * t * t * rest[1][k] + t**3 * rest[2][k]
-                    for k in (0, 1)
-                ))  # fmt: skip
+        case bundle.LINE if len(shape.points) > 2:  # a curve through its control points
+            pts = [_bezier(shape.points, i / 16) for i in range(17)]
         case bundle.LINE:
             pts = list(shape.points)
         case bundle.POLYGON:
@@ -173,6 +165,16 @@ def _outline(shape: Shape) -> list[Point]:
         case _:
             pts = []
     return [f(x, y) for x, y in pts]
+
+
+def _bezier(points: list[Point], t: float) -> Point:
+    """The point at `t` on the Bézier curve with these control points (de Casteljau)."""
+    while len(points) > 1:
+        points = [
+            ((1 - t) * a[0] + t * b[0], (1 - t) * a[1] + t * b[1])
+            for a, b in itertools.pairwise(points)
+        ]
+    return points[0]
 
 
 def _dashes(line: list[Point], style: int, width: int) -> Iterator[list[Point]]:

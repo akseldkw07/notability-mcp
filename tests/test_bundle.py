@@ -94,7 +94,6 @@ def test_the_apps_export_leaves_out_only_a_last_empty_page():
     # an empty page in the middle stays; only the last goes
     assert exported_page_count([page(1, shapes=[shape]), page(2), page(3)]) == 2
     assert exported_page_count([page(1), page(2, pdf=pdf)]) == 2  # its own PDF page
-    assert exported_page_count([page(1), page(2)], with_text={2}) == 2  # typed text
     assert exported_page_count([page(1)]) == 1  # an empty note still has a page
 
 

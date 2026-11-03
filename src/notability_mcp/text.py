@@ -7,8 +7,8 @@ tests/test_parity.py, which compare the two):
   wraps at its right margin;
 - each line is LINE_PITCH x the font size tall; a page holds as many whole lines as fit
   between its top and bottom margins, then the text continues on the next page;
-- but when the note aligns text to lines and the paper is lined or squared, each line sits on
-  one of the paper's lines (see rulings): those at least a font size below the top margin
+- but on lined paper (or squared paper, when the note aligns text to lines), each line sits
+  on one of the paper's lines (see rulings): those at least a font size below the top margin
   and above the bottom one;
 - glyphs are drawn at GLYPH_SCALE x the style's size.
 """
@@ -189,8 +189,8 @@ def rulings(length: float, spacing: float) -> list[float]:
 
 
 class _Cursor:
-    """Where the body text's next line goes on a page: on the paper's lines when the note
-    aligns text to lines and the paper has them, else one LINE_PITCH line after another."""
+    """Where the body text's next line goes on a page: on the paper's lines (see body_spans),
+    else one LINE_PITCH line after another."""
 
     def __init__(self, note: Note, page: Page) -> None:
         self.page = page
@@ -198,7 +198,11 @@ class _Cursor:
         self.y = self.top
         paper = page.paper
         self.slots: list[float] | None = None
-        if note.align_to_lines and paper and paper.flair in (0, 2) and (paper.spacing or 0) > 1:
+        # text always sits on lined paper's lines; on squared paper, when the note says so
+        lined = paper is not None and (
+            paper.flair == 0 or (paper.flair == 2 and note.align_to_lines)
+        )
+        if paper and lined and (paper.spacing or 0) > 1:
             sp = paper.spacing or 0.0
             last = page.height - self.bottom
             first = self.top + note.font[1]  # room above the line for a line of text

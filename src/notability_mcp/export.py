@@ -14,7 +14,7 @@ EXPORT_DPI = 150
 
 def default_pages(note: Note) -> list[int]:
     """The pages the app's own export has: every page, less a last one that's empty."""
-    return list(range(1, exported_page_count(note.pages, set(body_spans(note))) + 1))
+    return list(range(1, exported_page_count(note.pages) + 1))
 
 
 def write_pdf(

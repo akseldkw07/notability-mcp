@@ -202,7 +202,7 @@ class Shape:
     origin: tuple[float, float]
     scale: tuple[float, float]
     rotation: float
-    points: list[tuple[float, float]]  # line: start, [control 1, control 2,] end; polygon: corners
+    points: list[tuple[float, float]]  # line: start, its control points, end; polygon: corners
     size: tuple[float, float]  # ellipse
     color: tuple[int, int, int, int]
     width: float
@@ -412,17 +412,18 @@ def _restyle(style: Style, p: "_Table") -> Style:
     return replace(style, **changes) if changes else style
 
 
-def exported_page_count(pages: list[Page], with_text: set[int] | frozenset = frozenset()) -> int:
+def exported_page_count(pages: list[Page]) -> int:
     """How many pages the app's own export has: all of them, less the last if it's empty (the
     page the app adds as you write; earlier empty pages stay). A page is empty without ink,
-    shapes, images, typed text (`with_text`: page numbers) or a PDF page of its own: a page
-    repeating a template PDF page seen earlier in the note is empty."""
+    shapes, images or a PDF page of its own (one repeating a template PDF page seen earlier in
+    the note doesn't count). Typed text doesn't count either: body text that runs onto that
+    page is left out of the app's export too."""
     if len(pages) < 2:
         return len(pages)
     last = pages[-1]
     earlier = {(p.pdf.asset, p.pdf.index) for p in pages[:-1] if p.pdf}
     own_pdf = last.pdf is not None and (last.pdf.asset, last.pdf.index) not in earlier
-    empty = not (last.inks or last.shapes or last.blocks or own_pdf or last.number in with_text)
+    empty = not (last.inks or last.shapes or last.blocks or own_pdf)
     return len(pages) - 1 if empty else len(pages)
 
 
@@ -436,7 +437,8 @@ def _definition(
     if kind == LINE:
         start, end = d.pair(0) or (0.0, 0.0), d.pair(3) or (0.0, 0.0)
         c1, c2 = d.pair(1), d.pair(2)
-        return ([start, c1, c2, end] if c1 and c2 else [start, end]), (0.0, 0.0)
+        # one control point: a quadratic curve; two: a cubic
+        return [start, *(c for c in (c1, c2) if c), end], (0.0, 0.0)
     if kind == POLYGON:
         return d.pairs(0), (0.0, 0.0)
     return [], d.pair(1) or (0.0, 0.0)
