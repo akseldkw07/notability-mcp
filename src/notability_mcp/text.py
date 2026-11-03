@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
-from PIL import ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont
 
 from notability_mcp.bundle import IMAGE_BLOCK, TEXT_BLOCK, Block, Note, Page, Run, Style
 
@@ -92,10 +92,52 @@ def _truetype(font: Font, px: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFo
     return ImageFont.load_default(px)
 
 
+FALLBACK = (_SYSTEM_FONTS / "Supplemental" / "Arial Unicode.ttf", 0)  # for missing glyphs
+
+
+@cache
+def _fallback(px: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    try:
+        return ImageFont.truetype(str(FALLBACK[0]), px, index=FALLBACK[1])
+    except OSError:
+        return ImageFont.load_default(px)
+
+
+@cache
+def _has_glyph(font: Font, ch: str) -> bool:
+    """Whether the font draws `ch`, not its missing-glyph box (macOS substitutes another
+    font's glyph there, e.g. arrows missing from Helvetica Neue)."""
+    if ch.isspace() or ord(ch) < 0x250:  # Latin: every font here has it
+        return True
+    pil = _truetype(font, 40)
+
+    def bitmap(c: str) -> bytes:
+        img = Image.new("L", (80, 80))
+        ImageDraw.Draw(img).text((10, 60), c, font=pil, fill=255, anchor="ls")
+        return img.tobytes()
+
+    return bitmap(ch) != bitmap("\U0010fffd")
+
+
+def _segments(text: str, font: Font) -> list[tuple[str, bool]]:
+    """`text` cut into runs the font has glyphs for (True) and runs it lacks (False)."""
+    out: list[tuple[str, bool]] = []
+    for ch in text:
+        has = _has_glyph(font, ch)
+        if out and out[-1][1] == has:
+            out[-1] = (out[-1][0] + ch, has)
+        else:
+            out.append((ch, has))
+    return out
+
+
 def text_width(text: str, font: Font) -> float:
     """Advance width of `text` in points."""
     px = 200  # measure at a large size, then scale: font hinting at small sizes skews widths
-    return _truetype(font, px).getlength(text) * font.size * GLYPH_SCALE / px
+    width = 0.0
+    for part, has in _segments(text, font):
+        width += (_truetype(font, px) if has else _fallback(px)).getlength(part)
+    return width * font.size * GLYPH_SCALE / px
 
 
 def line_height(font: Font) -> float:
@@ -233,13 +275,15 @@ class _Cursor:
         self.y = self.top
         paper = page.paper
         self.slots: list[float] | None = None
+        self.spacing = 0.0
+        self.box = (0.0, 0.0)  # the last line's top and bottom: what images push aside
         self.ruled = False
         # text always sits on lined paper's lines; on squared paper, when the note says so
         lined = paper is not None and (
             paper.flair == 0 or (paper.flair == 2 and note.align_to_lines)
         )
         if paper and lined and (paper.spacing or 0) > 1:
-            sp = paper.spacing or 0.0
+            self.spacing = sp = paper.spacing or 0.0
             self.ruled = paper.flair == 0  # lined; squared paper uses its last line too
             last = page.height - self.bottom
             first = self.top + sp  # a whole line's room above it (as the Mac app lays it out)
@@ -262,11 +306,14 @@ class _Cursor:
             # the bottom edge is used too (it is also the next page's top line)
             if text and self.ruled and 0.5 < room < font.size:
                 return None
-            return self.slots.pop(0) - SNAP_RAISE * font.size
+            line = self.slots.pop(0)
+            self.box = (line - self.spacing, line)
+            return line - SNAP_RAISE * font.size
         height = line_height(font)
         if self.y + height > self.page.height - self.bottom and self.y > self.top:
             return None
         baseline = self.y + baseline_depth(font)
+        self.box = (self.y, self.y + height)
         self.y += height
         return baseline
 
@@ -302,7 +349,7 @@ def body_spans(note: Note) -> dict[int, list[Span]]:
             if not pieces:
                 break  # an empty paragraph is one empty line
             left, right = cursor.left + indent, cursor.page.width - cursor.right
-            gaps = _gaps(cursor.page, left, right, baseline, tallest)
+            gaps = _gaps(cursor.page, left, right, *cursor.box)
             spans, pieces = _fill(pieces, gaps, left, right, baseline, style.align)
             out.setdefault(cursor.page.number, []).extend(spans)
             if not pieces:
@@ -311,11 +358,12 @@ def body_spans(note: Note) -> dict[int, list[Span]]:
 
 
 def _gaps(
-    page: Page, left: float, right: float, baseline: float, font: Font
+    page: Page, left: float, right: float, top: float, bottom: float
 ) -> list[tuple[float, float]]:
-    """The stretches of a line, from `left` to `right`, that no pasted image covers."""
+    """The stretches of a line (from `left` to `right`, `top` to `bottom`: on lined paper the
+    whole space between two lines) that no pasted image covers."""
     gaps = [(left, right)]
-    top, bottom = baseline - font.size, baseline + 0.3 * font.size
+    pad = page.margins[2]
     for block in page.blocks:
         if block.kind != IMAGE_BLOCK:
             continue
@@ -326,7 +374,9 @@ def _gaps(
         gaps = [
             part
             for a, b in gaps
-            for part in ((a, min(b, x)), (max(a, x1), b))
+            # text keeps the page's side margin away from an image (measured: 18.7 pt on a
+            # page with 18.7 pt margins)
+            for part in ((a, min(b, x - pad)), (max(a, x1 + pad), b))
             if part[1] - part[0] > 1
         ]
     return gaps
@@ -422,7 +472,11 @@ def draw(img_draw: ImageDraw.ImageDraw, spans: list[Span], s: float) -> None:
         font = _truetype(span.font, px)
         color = span.color[:3]
         x, y = span.x * s, span.baseline * s
-        img_draw.text((x, y), span.text, font=font, fill=color, anchor="ls")
+        at = x
+        for part, has in _segments(span.text, span.font):
+            pil = font if has else _fallback(px)
+            img_draw.text((at, y), part, font=pil, fill=color, anchor="ls")
+            at += text_width(part, span.font) * s
         if span.underline or span.strikethrough:
             w = text_width(span.text.rstrip(), span.font) * s
             thick = max(1, round(px / 14))

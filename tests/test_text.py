@@ -126,3 +126,14 @@ def test_body_text_wraps_around_a_pasted_image():
     below = [s for s in spans if s.baseline > 150]
     assert beside and min(s.x for s in beside) >= 236  # to the right of the image
     assert below and min(s.x for s in below) == 36  # back at the margin under it
+
+
+def test_a_glyph_the_font_lacks_comes_from_a_fallback_font():
+    helvetica = text.Font("Helvetica Neue", 14.0)
+    assert text._has_glyph(helvetica, "a") and not text._has_glyph(helvetica, "→")
+
+    page = Page(1, (1, 1, 0), 612, 792)
+    n = note("→", [page])
+    img = Image.open(io.BytesIO(render_page(page, 792, text=page_spans(n, page)))).convert("L")
+    left, top, right, bottom = ImageOps.invert(img).getbbox() or (0, 0, 0, 0)
+    assert right - left > bottom - top  # an arrow: wider than tall, not the missing-glyph box
