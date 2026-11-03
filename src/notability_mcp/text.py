@@ -258,7 +258,9 @@ class _Cursor:
             if not self.slots:
                 return None
             room = self.page.height - self.bottom - self.slots[0]
-            if text and self.ruled and room < font.size:  # 6.6 pt is too little, 17 enough
+            # measured: a line 6.6 pt above the bottom is skipped, 17 pt is used; one right on
+            # the bottom edge is used too (it is also the next page's top line)
+            if text and self.ruled and 0.5 < room < font.size:
                 return None
             return self.slots.pop(0) - SNAP_RAISE * font.size
         height = line_height(font)

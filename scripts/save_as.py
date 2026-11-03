@@ -142,12 +142,14 @@ def _wait_for(path: Path, timeout: float) -> bool:
 def save_as(note_id: str, title: str, out: Path) -> Path:
     """Have the app export one note as a PDF into `out`, named by note id."""
     target = out / f"{note_id}.pdf"
-    target.unlink(missing_ok=True)
+    fresh = out / f"{note_id}.new.pdf"  # the old reference stays until the new one is in
+    fresh.unlink(missing_ok=True)
     _open(note_id)
     _osascript(_CLICK_EXPORT % {"timeout": WINDOW_TIMEOUT, "settle": SETTLE}, title)
-    _osascript(_SAVE_TO, str(out), target.stem)
-    if not _wait_for(target, SAVE_TIMEOUT):
-        raise RuntimeError(f"no PDF at {target} after {SAVE_TIMEOUT:.0f} s")
+    _osascript(_SAVE_TO, str(out), fresh.stem)
+    if not _wait_for(fresh, SAVE_TIMEOUT):
+        raise RuntimeError(f"no PDF at {fresh} after {SAVE_TIMEOUT:.0f} s")
+    fresh.replace(target)
     return target
 
 
