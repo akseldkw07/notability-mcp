@@ -37,6 +37,11 @@ logs while it runs and syncs risks corrupting notes.
 
 ## Rendering
 
+- **Large exports.** `export_note_pdf` renders every page as a 150 dpi image, even PDF pages
+  nobody wrote on: a 1,416-page imported textbook (ink on 16 pages) took about 200 s and made
+  a 451 MB PDF. Copy unannotated PDF pages straight from the source PDF (fast, small, text
+  stays selectable) and render only the pages with ink, shapes, text or images; or at least
+  warn before a very large export. Until then, pass `pages` to export a range.
 - **Exports should come from the app's own "Save as…", not from screen control.** Our renderer
   approximates Notability (paper texture, typed text, line styles); the app's Save as… PDF is
   exact. Prefer a way to trigger it without taking over the screen. As of Notability on
