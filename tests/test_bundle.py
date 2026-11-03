@@ -106,10 +106,11 @@ def test_typed_text_keeps_its_styles_paragraphs_and_text_boxes():
 
     assert (note.font, note.align_to_lines) == (("Inter", 12.0), True)
     assert [(r.text, r.style) for r in note.body] == [
-        ("Hello ", Style()),
-        ("world", Style(bold=True)),
+        ("Hello", Style(subscript=True)),  # field 12 is subscript, not strikethrough
+        (" ", Style()),
+        ("world", Style(bold=True, strikethrough=True)),
         ("\n", Style()),
-        ("second", Style(indent=2)),
+        ("second", Style(indent=2, decorator=1, line_spacing=1.5)),
     ]
     [box] = note.pages[0].blocks
     assert box.kind == TEXT_BLOCK and [r.text for r in box.text] == ["boxed"]
@@ -128,3 +129,13 @@ def test_a_repeated_template_page_is_not_content():
     template = PdfPage("ab" * 64, 0)
     pages = [Page(1, (1, 1, 0), 612, 792, pdf=template), Page(2, (1, 2, 0), 612, 792, pdf=template)]
     assert exported_page_count(pages) == 1
+
+
+def test_a_paragraph_style_starting_on_the_newline_before_covers_only_the_next_paragraph():
+    from notability_mcp.bundle import _paragraphs
+
+    seq = [(1, 1, i) for i in range(7)]  # "ab\ncd\ne"
+    glyph = dict(zip(seq, "ab\ncd\ne", strict=True))
+
+    assert _paragraphs(seq, glyph, 2, 4) == (3, 6)  # "cd\n", not "ab\n" too
+    assert _paragraphs(seq, glyph, 1, 1) == (0, 3)  # inside a paragraph: all of it

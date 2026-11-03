@@ -47,13 +47,15 @@ logs while it runs and syncs risks corrupting notes.
   triggers its export without driving the window: its App Intents only select notes or
   folders, and `notability://` only opens them. Watch for an export intent or Shortcuts action.
   `scripts/save_as.py` drives the menu, but only as a dev tool for parity references.
-- **Typed text, the rest.** Lists aren't drawn (decorators: bullets, numbers, checkboxes).
-  Centred / right alignment, paragraph line spacing, highlight colour and text box line
-  metrics are drawn but not measured on an app export. Add a reference that uses them
-  (`scripts/save_as.py --note <id>`) and tune `text.py` until the parity test passes.
+- **Typed text nobody uses yet.** No note in this library uses checkboxes, block quotes, code,
+  highlight colour, links, superscript / subscript, or centred / right alignment (checked
+  2026-11-03), so they're decoded but drawn plainly or not at all. Add one when a note uses it,
+  with a reference (`scripts/save_as.py --note <id>`).
 - **Rules that rest on one or two notes** (marked "measured" in `text.py`): which line near the
-  page bottom lined-paper text may use (6.6 pt above it: no; 17 or 0: yes), and the gap between
-  an image and the text beside it (the page margin). Re-check when a new reference fails.
+  page bottom lined-paper text may use (6.6 pt above it: no; 17 or 0: yes); the gap between
+  an image and the text beside it (the page margin); Inter's line height (two sizes). Re-check
+  when a new reference fails. One note's File > Export > PDF is greyed out in the app, so it
+  can't be a reference.
 - **26 inked PDF pages** still have ink with nowhere to show: past the left or right edge, or
   past the top of the first page or the bottom of the last. Look at one (strokes past a page's
   top or bottom now show on the page next to it, as in the app: 212 strokes).
@@ -88,6 +90,10 @@ anything bigger than a fix:
     lined-paper snapping, indent, tabs, wrapping around pasted images, fallback glyphs;
   - pages at the note's own size; only a last empty page is dropped;
   - ink past a page's edge continues on the next page; pencil see-through; tape left out.
+- **Lists, line spacing, text boxes** (#8, 2026-11-03; 22 references, all pass): bullets and
+  numbered items with hanging indents, paragraph line spacing, text boxes laid out like body
+  text; squared paper's rows start at the page's top; paragraph styles start after the
+  newline they're anchored on; strikethrough read from the right field.
 
 ## Later
 

@@ -164,6 +164,20 @@ def _features(note: Note) -> set[str]:
             out.add("character styles")
         if note.align_to_lines:
             out.add("aligned to lines")
+    for runs in [note.body, *(b.text for p in note.pages for b in p.blocks if b.text)]:
+        for r in runs:
+            if not r.text.strip():
+                continue
+            out.update(
+                name
+                for name, on in (
+                    ("bullets", r.style.decorator == 1),
+                    ("numbered lists", r.style.decorator == 2),
+                    ("line spacing", r.style.line_spacing not in (0.0, 1.0)),
+                    ("underline", r.style.underline),
+                )
+                if on
+            )
     for page in note.pages:
         if page.paper and page.paper.flair is not None:
             out.add(f"paper flair {page.paper.flair}")
