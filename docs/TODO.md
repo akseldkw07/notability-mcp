@@ -42,27 +42,21 @@ logs while it runs and syncs risks corrupting notes.
   a 451 MB PDF. Copy unannotated PDF pages straight from the source PDF (fast, small, text
   stays selectable) and render only the pages with ink, shapes, text or images; or at least
   warn before a very large export. Until then, pass `pages` to export a range.
-- **Exports should come from the app's own "Save as…", not from screen control.** Our renderer
-  approximates Notability (paper texture, typed text, line styles); the app's Save as… PDF is
-  exact. Prefer a way to trigger it without taking over the screen. As of Notability on
-  2026-11-03 there is none: its App Intents are only Select Note / Select Folder, and the
-  `notability://` URL scheme only opens notes. Watch for an export intent or Shortcuts action.
-  Driving the menu and save dialog (Accessibility permission, brings the app forward, breaks
-  when the UI changes) is the last resort; until then `export_note_pdf` renders.
-  `scripts/save_as.py` does drive the menu, but only as a dev tool: it saves the app's PDFs of
-  sample notes as references for `tests/test_parity.py`, which checks our export against them.
-- **Parity status** (17 app exports of real notes, 2026-11-03): all pass. Some rules rest on
-  few cases and are marked "measured" in `text.py`: on lined paper, which line near the page
-  bottom text may use (6.6 pt above it: no; 17 or 0: yes); the gap between an image and the
-  text beside it (the page margin, from one note). When a new note fails, save its reference
-  (`scripts/save_as.py --note <id>`) and adjust.
-- **Typed text calibration.** Measured on app exports: line height per font (Helvetica Neue's
-  own; Inter 1.7), baseline, page breaks, lined-paper snapping, indent, the app dropping a last
-  page that holds only text. Text boxes, centred / right alignment, lists (decorators are not
-  drawn), line spacing and highlight colour are guesses or missing: add references with them
-  (`scripts/save_as.py --note ...`) and tune `text.py` until the parity test passes.
-- **25 inked PDF pages** on a real library still have ink past the page edge after the
-  page-size fix: look at one.
+- **Exports from the app's own "Save as…" without screen control.** The app's PDF is exact;
+  ours is rendered (now checked against it, see Done). As of Notability on 2026-11-03 nothing
+  triggers its export without driving the window: its App Intents only select notes or
+  folders, and `notability://` only opens them. Watch for an export intent or Shortcuts action.
+  `scripts/save_as.py` drives the menu, but only as a dev tool for parity references.
+- **Typed text, the rest.** Lists aren't drawn (decorators: bullets, numbers, checkboxes).
+  Centred / right alignment, paragraph line spacing, highlight colour and text box line
+  metrics are drawn but not measured on an app export. Add a reference that uses them
+  (`scripts/save_as.py --note <id>`) and tune `text.py` until the parity test passes.
+- **Rules that rest on one or two notes** (marked "measured" in `text.py`): which line near the
+  page bottom lined-paper text may use (6.6 pt above it: no; 17 or 0: yes), and the gap between
+  an image and the text beside it (the page margin). Re-check when a new reference fails.
+- **26 inked PDF pages** still have ink with nowhere to show: past the left or right edge, or
+  past the top of the first page or the bottom of the last. Look at one (strokes past a page's
+  top or bottom now show on the page next to it, as in the app: 212 strokes).
 
 ## Search
 
@@ -82,6 +76,18 @@ anything bigger than a fix:
 4. `feat: fence note text as untrusted in tool results`.
 5. `feat: transcripts and image OCR from the app's own indexes`.
 6. `feat(search): folder, source and date filters; whole-word snippets`.
+7. `feat(render): shapes, paper and typed text`, with the parity check that measured them.
+
+## Done
+
+- **Exports match the app's** (#5, #6, 2026-11-03), checked by `tests/test_parity.py` against
+  the app's own PDFs of 17 notes picked to cover what we render (all pass):
+  - shapes (lines, curves, polygons, ellipses, dashes, fills); paper colour and grid, lines or
+    dots, also under PDF pages; template PDF backgrounds repeating on every page;
+  - typed text: body text and text boxes, fonts and styles, line height per font, page breaks,
+    lined-paper snapping, indent, tabs, wrapping around pasted images, fallback glyphs;
+  - pages at the note's own size; only a last empty page is dropped;
+  - ink past a page's edge continues on the next page; pencil see-through; tape left out.
 
 ## Later
 
