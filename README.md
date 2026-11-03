@@ -222,8 +222,8 @@ The index is stored in `~/Library/Application Support/notability-mcp` on macOS,
   elsewhere. On 20 pages of handwritten math, Vision found 44% of the key words and 7% of the
   formulas; RapidOCR found 46% and 16%. Search will usually find the right page, but read the
   page image before trusting anything exact.
-- Page images (and PDF exports) show ink, PDF pages and, with the local source, pasted images.
-  Shapes and typed text aren't drawn yet.
+- Page images (and PDF exports) show ink, shapes, PDF pages and, with the local source, pasted images.
+  Typed text isn't drawn yet.
 - Notes other people shared with you aren't synced.
 - Audio recordings aren't transcribed or searched by the web source; the local source indexes
   the transcripts Notability made.

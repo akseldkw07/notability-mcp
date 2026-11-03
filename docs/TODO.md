@@ -37,9 +37,15 @@ logs while it runs and syncs risks corrupting notes.
 
 ## Rendering
 
-- **Shapes and typed text** aren't drawn on page images or exports (ink, PDF pages and pasted
-  images are). Typed text needs the text runs' positions and styles from the change log; shapes
-  are `CreateShape` / `ModifyShape` ops.
+- **Exports should come from the app's own "Save as…", not from screen control.** Our renderer
+  approximates Notability (paper texture, typed text, line styles); the app's Save as… PDF is
+  exact. Prefer a way to trigger it without taking over the screen. As of Notability on
+  2026-11-03 there is none: its App Intents are only Select Note / Select Folder, and the
+  `notability://` URL scheme only opens notes. Watch for an export intent or Shortcuts action.
+  Driving the menu and save dialog (Accessibility permission, brings the app forward, breaks
+  when the UI changes) is the last resort; until then `export_note_pdf` renders.
+- **Typed text** isn't drawn on page images or exports (ink, shapes, paper, PDF pages and pasted
+  images are). It needs the text runs' positions and styles from the change log.
 - **25 inked PDF pages** on a real library still have ink past the page edge after the
   page-size fix: look at one.
 

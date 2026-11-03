@@ -1,4 +1,5 @@
 import io
+from typing import cast
 
 from PIL import Image, ImageOps
 
@@ -54,3 +55,23 @@ def test_pasted_images_are_cropped_scaled_and_placed():
     assert img.convert("RGB").getpixel((195, 325)) == (255, 255, 255)
     without = Image.open(io.BytesIO(render_page(page, 792)))
     assert without.convert("RGB").getpixel((250, 325)) == (255, 255, 255)
+
+
+def test_shapes_are_drawn_and_highlighter_shapes_tint_the_paper():
+    from appindex_files import change_log_with_shapes
+
+    from notability_mcp.bundle import decode_local
+
+    [page] = decode_local("n", change_log_with_shapes()).pages
+    img = Image.open(io.BytesIO(render_page(page, max_edge=792))).convert("RGB")
+
+    def px(xy: tuple[int, int]) -> tuple[int, ...]:
+        return cast(tuple[int, ...], img.getpixel(xy))
+
+    assert max(px((200, 100))) < 80  # the line, (100, 100) to (300, 100)
+    r, g, b = px((200, 325))  # the ellipse's left edge, at (200, 325) after its move
+    assert r > 200 and g < 80 and b < 80
+    assert px((250, 325)) == (255, 255, 255)  # not filled
+    r, g, b = px((200, 525))  # inside the highlighter rectangle
+    assert r == g == 255 and b < 200
+    assert px((200, 700)) == (255, 255, 255)  # the deleted line

@@ -29,6 +29,8 @@ class _Op(IntEnum):
     CREATE_INK = 15
     ADD_PATH_ELEMENTS = 16
     MODIFY_INK = 17
+    CREATE_SHAPE = 18
+    MODIFY_SHAPE = 19
     CREATE_BLOCK = 22
     MODIFY_BLOCK = 23
     MODIFY_POSITIONS = 24
@@ -157,6 +159,28 @@ class Block:
 
 IMAGE_BLOCK = 1
 
+# CreateShape.definition types (DefinitionUnion member index + 1)
+LINE, POLYGON, ELLIPSE = 1, 2, 3
+
+
+@dataclass
+class Shape:
+    """A recognized shape: a line (start/end, optional control points), a polygon, or an
+    ellipse in a `size` box, in its own space before `origin`, `scale` and `rotation`."""
+
+    page: SeqId | None
+    kind: int  # LINE, POLYGON or ELLIPSE
+    origin: tuple[float, float]
+    scale: tuple[float, float]
+    rotation: float
+    points: list[tuple[float, float]]  # line: start, [control 1, control 2,] end; polygon: corners
+    size: tuple[float, float]  # ellipse
+    color: tuple[int, int, int, int]
+    width: float
+    fill: tuple[int, int, int, int] | None
+    tool: int
+    style: int  # 0 variable, 1 fixed width, 2 dashed, 3 dotted
+
 
 @dataclass
 class PdfPage:
@@ -173,6 +197,7 @@ class Page:
     pdf: PdfPage | None = None
     inks: list[Ink] = field(default_factory=list)
     blocks: list[Block] = field(default_factory=list)
+    shapes: list[Shape] = field(default_factory=list)
 
 
 @dataclass
@@ -244,6 +269,22 @@ def _background(bg: _Table | None) -> dict:
     return out
 
 
+def _definition(
+    kind: int, d: _Table | None
+) -> tuple[list[tuple[float, float]], tuple[float, float]]:
+    """(points, size) of a shape definition: Line {0 start, 1-2 control points, 3 end},
+    Polygon {0 points} or NormalShape {1 size}."""
+    if d is None:
+        return [], (0.0, 0.0)
+    if kind == LINE:
+        start, end = d.pair(0) or (0.0, 0.0), d.pair(3) or (0.0, 0.0)
+        c1, c2 = d.pair(1), d.pair(2)
+        return ([start, c1, c2, end] if c1 and c2 else [start, end]), (0.0, 0.0)
+    if kind == POLYGON:
+        return d.pairs(0), (0.0, 0.0)
+    return [], d.pair(1) or (0.0, 0.0)
+
+
 def build_note(note_id: str, ops: list[tuple[Id, int, _Table]]) -> Note:
     title: str | None = None
     note_bg: dict = {}
@@ -252,6 +293,7 @@ def build_note(note_id: str, ops: list[tuple[Id, int, _Table]]) -> Note:
     page_bg: dict[SeqId, dict] = {}
     inks: dict[Id, Ink] = {}
     blocks: dict[Id, Block] = {}
+    shapes: dict[Id, Shape] = {}
     deleted: dict[Id | SeqId, bool] = {}
     chars: dict[Id | None, list[tuple[SeqId, SeqId | None, str]]] = defaultdict(list)
     removed: set[SeqId] = set()
@@ -334,25 +376,55 @@ def build_note(note_id: str, ops: list[tuple[Id, int, _Table]]) -> Note:
                         block.scale = size
                     if (crop := p.table(12)) and (rect := crop._unpack(0, _RECT)):
                         block.crop = rect  # type: ignore[assignment]
+            case _Op.CREATE_SHAPE:
+                points, size = _definition(p.scalar(4, "<B", 0), p.table(5))
+                shapes[(site, ts)] = Shape(
+                    page=p.seq(0),
+                    kind=p.scalar(4, "<B", 0),
+                    origin=p.pair(1) or (0.0, 0.0),
+                    rotation=p.scalar(2, "<f", 0.0),
+                    scale=p.pair(3) or (1.0, 1.0),
+                    points=points,
+                    size=size,
+                    tool=p.scalar(6, "<b", 0),
+                    style=p.scalar(7, "<b", 1),
+                    color=p.rgba(9) or (0, 0, 0, 255),
+                    width=p.scalar(10, "<f", 4.0),
+                    fill=p.rgba(11),
+                )
+            case _Op.MODIFY_SHAPE:
+                for oid in p.ids(0):
+                    if (shape := shapes.get(oid)) is None:
+                        continue
+                    shape.page = p.seq(1) or shape.page
+                    shape.origin = p.pair(2) or shape.origin
+                    if rot := p.table(3):
+                        shape.rotation = rot.scalar(0, "<f", 0.0)
+                    if (sc := p.table(4)) and (size := sc.pair(0)):
+                        shape.scale = size
+                    if (kind := p.scalar(5, "<B", 0)) and (d := p.table(6)):
+                        shape.kind = kind
+                        shape.points, shape.size = _definition(kind, d)
+                    shape.tool = p.scalar(7, "<b", shape.tool)
+                    shape.style = p.scalar(8, "<b", shape.style)
+                    shape.color = p.rgba(10) or shape.color
+                    shape.width = p.scalar(11, "<f", shape.width)
+                    if fill := p.table(12):
+                        shape.fill = fill.rgba(0)
             case _Op.MODIFY_POSITIONS:
                 for m in p.tables(0):
                     oid = m.id(0)
-                    if oid in blocks:
-                        block = blocks[oid]  # type: ignore[index]
-                        block.page = m.seq(1) or block.page
-                        block.origin = m.pair(2) or block.origin
-                        if rot := m.table(3):
-                            block.rotation = rot.scalar(0, "<f", 0.0)
-                        if (sc := m.table(4)) and (size := sc.pair(0)):
-                            block.scale = size
-                    if oid is None or (ink := inks.get(oid)) is None:
+                    if oid is None:
                         continue
-                    ink.page = m.seq(1) or ink.page
-                    ink.origin = m.pair(2) or ink.origin
+                    thing = inks.get(oid) or blocks.get(oid) or shapes.get(oid)
+                    if thing is None:
+                        continue
+                    thing.page = m.seq(1) or thing.page
+                    thing.origin = m.pair(2) or thing.origin
                     if rot := m.table(3):
-                        ink.rotation = rot.scalar(0, "<f", 0.0)
+                        thing.rotation = rot.scalar(0, "<f", 0.0)
                     if (sc := m.table(4)) and (size := sc.pair(0)):
-                        ink.scale = size
+                        thing.scale = size
             case _Op.DELETE_ENTITIES:
                 for fid, flag in ((0, True), (1, False)):
                     deleted.update(dict.fromkeys(p.ids(fid), flag))
@@ -386,6 +458,9 @@ def build_note(note_id: str, ops: list[tuple[Id, int, _Table]]) -> Note:
     for iid, ink in inks.items():
         if not deleted.get(iid) and ink.page in by_id:
             by_id[ink.page].inks.append(ink)
+    for sid, shape in shapes.items():
+        if not deleted.get(sid) and shape.page in by_id:
+            by_id[shape.page].shapes.append(shape)
 
     texts = []
     for runs in chars.values():

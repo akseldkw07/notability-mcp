@@ -1,13 +1,14 @@
 """Rasterize a note page (its PDF background and ink) to PNG."""
 
 import io
+import itertools
 import math
 from collections.abc import Callable, Iterator
 
 from PIL import Image, ImageChops, ImageDraw
 
-from notability_mcp import pdf
-from notability_mcp.bundle import HIGHLIGHTER, IMAGE_BLOCK, Block, Ink, Page, decode_path
+from notability_mcp import bundle, pdf
+from notability_mcp.bundle import HIGHLIGHTER, IMAGE_BLOCK, Block, Ink, Page, Shape, decode_path
 
 type Point = tuple[float, float]
 
@@ -24,7 +25,7 @@ def render_page(
     """PNG of the page's ink, long edge `max_edge` px, over `background` (the page's PDF) or white,
     with pasted images when `image` (SHA-512 -> file bytes) is given.
 
-    Shapes and typed text are not drawn.
+    Typed text is not drawn.
     """
     out = io.BytesIO()
     render_image(page, max_edge, background, image).save(out, "PNG", optimize=True)
@@ -48,36 +49,95 @@ def render_image(
     if image:
         for block in page.blocks:
             _paste_image(img, block, image, s)
-    if highlights := [ink for ink in page.inks if ink.tool == HIGHLIGHTER]:
+    marks = [*page.inks, *page.shapes]
+    if highlights := [m for m in marks if m.tool == HIGHLIGHTER]:
         # multiplied in, like a real highlighter: the PDF text under it stays legible
         layer = Image.new("RGB", canvas, "white")
         _draw(layer, highlights, s)
         img = ImageChops.multiply(img, layer)
-    _draw(img, [ink for ink in page.inks if ink.tool != HIGHLIGHTER], s)
+    _draw(img, [m for m in marks if m.tool != HIGHLIGHTER], s)
     return img.resize(size, Image.Resampling.LANCZOS)
 
 
-def _draw(img: Image.Image, inks: list[Ink], s: float) -> None:
+def _draw(img: Image.Image, marks: list[Ink | Shape], s: float) -> None:
     draw = ImageDraw.Draw(img)
-    for ink in inks:
-        color = _color(ink)
-        for line, width in _polylines(ink):
+    for mark in marks:
+        color = _color(mark.color, mark.tool)
+        if isinstance(mark, Shape):
+            outline = [(x * s, y * s) for x, y in _outline(mark)]
+            if mark.fill and mark.fill[3] and len(outline) > 2:
+                draw.polygon(outline, fill=_color(mark.fill, mark.tool))
+            width = max(1, round(mark.width * (abs(mark.scale[0]) or 1.0) * s))
+            for dash in _dashes(outline, mark.style, width):
+                draw.line(dash, fill=color, width=width, joint="curve")
+            continue
+        for line, width in _polylines(mark):
             pts = [(x * s, y * s) for x, y in line]
             draw.line(pts, fill=color, width=max(1, round(width * s)), joint="curve")
 
 
-def _color(ink: Ink) -> tuple[int, int, int]:
-    r, g, b, a = ink.color
-    if ink.tool == HIGHLIGHTER:  # its translucency, as the color it gives on white paper
+def _color(rgba: tuple[int, int, int, int], tool: int) -> tuple[int, int, int]:
+    r, g, b, a = rgba
+    if tool == HIGHLIGHTER:  # its translucency, as the color it gives on white paper
         return (255 - (255 - r) * a // 255, 255 - (255 - g) * a // 255, 255 - (255 - b) * a // 255)
     return (r, g, b)
 
 
-def _transform(ink: Ink) -> Callable[[float, float], Point]:
-    (ox, oy), (sx, sy) = ink.origin, ink.scale
+def _transform(mark: Ink | Shape) -> Callable[[float, float], Point]:
+    (ox, oy), (sx, sy) = mark.origin, mark.scale
     sx, sy = sx or 1.0, sy or 1.0
-    cos, sin = math.cos(ink.rotation), math.sin(ink.rotation)
+    cos, sin = math.cos(mark.rotation), math.sin(mark.rotation)
     return lambda x, y: (ox + x * sx * cos - y * sy * sin, oy + x * sx * sin + y * sy * cos)
+
+
+def _outline(shape: Shape) -> list[Point]:
+    """The shape as a polyline on the page (closed for polygons and ellipses)."""
+    f = _transform(shape)
+    match shape.kind:
+        case bundle.LINE if len(shape.points) == 4:  # a curve: cubic through two control points
+            start, *rest = shape.points
+            pts = [start]
+            for i in range(1, 17):
+                t = i / 16
+                pts.append(tuple(  # type: ignore[arg-type]
+                    (1 - t) ** 3 * start[k] + 3 * (1 - t) ** 2 * t * rest[0][k]
+                    + 3 * (1 - t) * t * t * rest[1][k] + t**3 * rest[2][k]
+                    for k in (0, 1)
+                ))  # fmt: skip
+        case bundle.LINE:
+            pts = list(shape.points)
+        case bundle.POLYGON:
+            pts = [*shape.points, *shape.points[:1]]
+        case bundle.ELLIPSE:
+            w, h = shape.size
+            turns = [2 * math.pi * i / 64 for i in range(65)]
+            pts = [(w / 2 * (1 + math.cos(a)), h / 2 * (1 + math.sin(a))) for a in turns]
+        case _:
+            pts = []
+    return [f(x, y) for x, y in pts]
+
+
+def _dashes(line: list[Point], style: int, width: int) -> Iterator[list[Point]]:
+    """The polyline whole, or cut into dashes (style 2) or dots (style 3)."""
+    if style not in (2, 3):
+        if len(line) > 1:
+            yield line
+        return
+    on, off = (3.0 * width, 2.0 * width) if style == 2 else (0.1, 2.0 * width)
+    period, pos = on + off, 0.0
+    for a, b in itertools.pairwise(line):
+        length = math.dist(a, b)
+        t = 0.0
+        while t < length:
+            phase = (pos + t) % period
+            step = min((on - phase) if phase < on else (period - phase), length - t)
+            if phase < on:
+                p0 = (a[0] + (b[0] - a[0]) * t / length, a[1] + (b[1] - a[1]) * t / length)
+                t1 = t + step
+                p1 = (a[0] + (b[0] - a[0]) * t1 / length, a[1] + (b[1] - a[1]) * t1 / length)
+                yield [p0, p1]
+            t += max(step, 1e-6)
+        pos += length
 
 
 def _polylines(ink: Ink) -> Iterator[tuple[list[Point], float]]:

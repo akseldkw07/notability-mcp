@@ -353,7 +353,7 @@ def get_page_image(
     """One note page as a PNG, to read handwriting, math and drawings exactly as written.
 
     Prefer this over OCR text whenever accuracy matters. Draws the ink over the page's PDF, if
-    any, and pasted images (local source); shapes and typed text are not shown.
+    any, and pasted images (local source); typed text is not shown.
     """
     con = _db()
     note = _note(con, note_id)
@@ -690,9 +690,10 @@ def export_note_pdf(
         bool, Field(description="Replace an existing file; by default ' (2)' is added")
     ] = False,
 ) -> Exported:
-    """Save a note as a PDF file: each page drawn as in notability_get_page_image (ink over the
-    page's PDF, pasted images). Shapes and typed text aren't drawn, and the pages are images, so
-    their text isn't selectable. Files in Desktop or Documents sync to iCloud if that's on.
+    """Save a note as a PDF file: each page drawn as in notability_get_page_image (ink and
+    shapes over the page's PDF, pasted images). Typed text isn't drawn, and the pages are
+    images, so their text isn't selectable. Files in Desktop or Documents sync to iCloud if
+    that's on.
     """
     con = _db()
     note = _note(con, note_id)

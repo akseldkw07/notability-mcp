@@ -200,3 +200,102 @@ def change_log_with_image(
     b.PrependUOffsetTRelativeSlot(0, vec, 0)
     b.Finish(b.EndObject())
     return bytes(b.Output())
+
+
+def _point(b: flatbuffers.Builder, x: float, y: float) -> int:
+    b.Prep(4, 8)
+    b.PrependFloat32(y)
+    b.PrependFloat32(x)
+    return b.Offset()
+
+
+def _color(b: flatbuffers.Builder, rgba: tuple[int, int, int, int]) -> int:
+    b.Prep(1, 4)
+    for c in reversed(rgba):
+        b.PrependUint8(c)
+    return b.Offset()
+
+
+def _op(b: flatbuffers.Builder, oid: tuple[int, int], tag: int, payload: int) -> int:
+    b.StartObject(6)
+    b.PrependStructSlot(0, _id(b, *oid), 0)
+    b.PrependUint8Slot(4, tag, 0)
+    b.PrependUOffsetTRelativeSlot(5, payload, 0)
+    return b.EndObject()
+
+
+def _log(b: flatbuffers.Builder, ops: list[int]) -> bytes:
+    vec = _vector(b, ops)
+    b.StartObject(1)
+    b.PrependUOffsetTRelativeSlot(0, vec, 0)
+    b.Finish(b.EndObject())
+    return bytes(b.Output())
+
+
+def change_log_with_shapes() -> bytes:
+    """A change log with shapes on the note's implicit first page:
+    - (1, 5) a black line from (100, 100) to (300, 100), 2 pt wide
+    - (1, 6) a red 100 x 50 ellipse created at (0, 0), then moved to (200, 300) by ModifyPositions
+    - (1, 8) a filled 40% yellow highlighter rectangle (a Polygon) at (100, 500), 200 x 50
+    - (1, 9) a line that is then deleted
+    CreateShape: {0: page, 1: origin, 4: definition type (1 Line, 2 Polygon, 3 NormalShape),
+    5: definition, 6: tool, 9: color, 10: borderWidth, 11: fillColor}."""
+    b = flatbuffers.Builder(512)
+
+    def shape(oid, origin, kind, definition, color, width=2.0, tool=0, fill=None):
+        b.StartObject(12)
+        b.PrependStructSlot(0, _seq_id(b, (0, 0, 0)), 0)
+        b.PrependStructSlot(1, _point(b, *origin), 0)
+        b.PrependUint8Slot(4, kind, 0)
+        b.PrependUOffsetTRelativeSlot(5, definition, 0)
+        b.PrependInt8Slot(6, tool, 0)
+        b.PrependStructSlot(9, _color(b, color), 0)
+        b.PrependFloat32Slot(10, width, 4.0)
+        if fill:
+            b.PrependStructSlot(11, _color(b, fill), 0)
+        return _op(b, oid, 18, b.EndObject())
+
+    def line(end):
+        b.StartObject(5)
+        b.PrependStructSlot(0, _point(b, 0, 0), 0)
+        b.PrependStructSlot(3, _point(b, *end), 0)
+        return b.EndObject()
+
+    ops = [shape((1, 5), (100, 100), 1, line((200, 0)), (0, 0, 0, 255))]
+    b.StartObject(2)
+    b.PrependStructSlot(1, _point(b, 100, 50), 0)
+    ops.append(shape((1, 6), (0, 0), 3, b.EndObject(), (255, 0, 0, 255)))
+    b.StartObject(3)
+    b.PrependStructSlot(0, _id(b, 1, 6), 0)
+    b.PrependStructSlot(2, _point(b, 200, 300), 0)
+    move = b.EndObject()
+    vec = _vector(b, [move])
+    b.StartObject(1)
+    b.PrependUOffsetTRelativeSlot(0, vec, 0)
+    ops.append(_op(b, (1, 7), 24, b.EndObject()))
+    points = [(0, 0), (200, 0), (200, 50), (0, 50)]
+    b.StartVector(8, len(points), 4)
+    for x, y in reversed(points):
+        _point(b, x, y)
+    pts = b.EndVector()
+    b.StartObject(1)
+    b.PrependUOffsetTRelativeSlot(0, pts, 0)
+    ops.append(
+        shape(
+            (1, 8),
+            (100, 500),
+            2,
+            b.EndObject(),
+            (255, 255, 0, 102),
+            tool=2,
+            fill=(255, 255, 0, 102),
+        )
+    )
+    ops.append(shape((1, 9), (100, 700), 1, line((200, 0)), (0, 0, 0, 255)))
+    b.StartVector(8, 1, 4)
+    _id(b, 1, 9)
+    dead = b.EndVector()
+    b.StartObject(4)
+    b.PrependUOffsetTRelativeSlot(0, dead, 0)
+    ops.append(_op(b, (1, 10), 25, b.EndObject()))
+    return _log(b, ops)

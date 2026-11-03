@@ -1,6 +1,14 @@
 from pathlib import Path
 
-from notability_mcp.bundle import Note, PdfPage, _page, decode_bundle, decode_local, linearize
+from notability_mcp.bundle import (
+    HIGHLIGHTER,
+    Note,
+    PdfPage,
+    _page,
+    decode_bundle,
+    decode_local,
+    linearize,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -57,3 +65,19 @@ def test_without_a_background_size_the_crop_box_is_the_page():
     page = _page(1, (1, 1, 0), {"pdf": ("ab" * 64, 0, [(363.0, 272.0)])})
 
     assert (page.width, page.height) == (363.0, 272.0)
+
+
+def test_shapes_land_on_their_page_with_moves_and_deletes_applied():
+    from appindex_files import change_log_with_shapes
+
+    from notability_mcp.bundle import ELLIPSE, LINE, POLYGON
+
+    [page] = decode_local("n", change_log_with_shapes()).pages
+
+    line, ellipse, rect = page.shapes
+    assert (line.kind, line.origin, line.points, line.width) == (
+        LINE, (100.0, 100.0), [(0.0, 0.0), (200.0, 0.0)], 2.0)  # fmt: skip
+    assert (ellipse.kind, ellipse.origin, ellipse.size) == (ELLIPSE, (200.0, 300.0), (100.0, 50.0))
+    assert ellipse.color == (255, 0, 0, 255)
+    assert (rect.kind, rect.tool, rect.fill) == (POLYGON, HIGHLIGHTER, (255, 255, 0, 102))
+    assert len(rect.points) == 4
