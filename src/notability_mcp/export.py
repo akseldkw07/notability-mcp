@@ -6,7 +6,7 @@ from pathlib import Path
 
 from notability_mcp import pdf
 from notability_mcp.bundle import Note, exported_page_count
-from notability_mcp.render import render_image
+from notability_mcp.render import render_image, spill_onto
 from notability_mcp.text import body_spans, page_spans
 
 EXPORT_DPI = 150
@@ -44,7 +44,9 @@ def write_pdf(
             edge = round(max(width, height) / 72 * EXPORT_DPI)
             out = io.BytesIO()
             spans = page_spans(note, page, body)
-            render_image(page, edge, background, image, spans).save(out, "JPEG", quality=85)
+            spill = spill_onto(note.pages, number)
+            img = render_image(page, edge, background, image, spans, spill)
+            img.save(out, "JPEG", quality=85)
             yield out.getvalue(), width, height
 
     return pdf.write_images(rendered(), path)

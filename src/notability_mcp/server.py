@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from notability_mcp import export, local, pdf, store
 from notability_mcp.bundle import Note, decode_bundle, decode_local
-from notability_mcp.render import MAX_EDGE, render_page
+from notability_mcp.render import MAX_EDGE, render_page, spill_onto
 from notability_mcp.text import page_spans
 from notability_mcp.untrusted import create_fence, neutralize_text
 
@@ -368,7 +368,9 @@ def get_page_image(
     target = pages[page - 1]
     background = store.asset(con, target.pdf.asset) if target.pdf else None
     spans = page_spans(decoded, target)
-    return Image(data=render_page(target, max_edge, background, _image, spans), format="png")
+    spill = spill_onto(pages, page)
+    png = render_page(target, max_edge, background, _image, spans, spill)
+    return Image(data=png, format="png")
 
 
 def _image(sha512: str) -> bytes | None:

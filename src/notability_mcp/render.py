@@ -4,6 +4,7 @@ import io
 import itertools
 import math
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 
 from PIL import Image, ImageChops, ImageDraw
 
@@ -28,6 +29,8 @@ _SUPERSAMPLE = 2  # draw at 2x, then downscale: cheap antialiasing
 PAPER_TINT = (251, 248, 242)  # the app's paper texture, averaged
 PAPER_LINE = (194, 192, 183)
 PAPER_LINE_WIDTH = 0.5
+PENCIL = 1  # CreateInk / CreateShape tool
+PENCIL_ALPHA = 140  # of 255
 
 
 def render_page(
@@ -36,13 +39,14 @@ def render_page(
     background: bytes | None = None,
     image: Callable[[str], bytes | None] | None = None,
     text: list[Span] | None = None,
+    spill: list[Ink | Shape] | None = None,
 ) -> bytes:
     """PNG of the page's ink and shapes, long edge `max_edge` px, over `background` (the page's
     PDF) or its paper, with pasted images when `image` (SHA-512 -> file bytes) is given and
     typed text (`text`, from text.page_spans).
     """
     out = io.BytesIO()
-    render_image(page, max_edge, background, image, text).save(out, "PNG", optimize=True)
+    render_image(page, max_edge, background, image, text, spill).save(out, "PNG", optimize=True)
     return out.getvalue()
 
 
@@ -52,8 +56,10 @@ def render_image(
     background: bytes | None = None,
     image: Callable[[str], bytes | None] | None = None,
     text: list[Span] | None = None,
+    spill: list[Ink | Shape] | None = None,
 ) -> Image.Image:
-    """The page drawn as in render_page, as an RGB image."""
+    """The page drawn as in render_page, as an RGB image; `spill`: ink and shapes from the
+    pages around it that run onto it (see spill_onto)."""
     k = max_edge / max(page.width, page.height)
     size = (round(page.width * k), round(page.height * k))
     s = k * _SUPERSAMPLE
@@ -71,14 +77,44 @@ def render_image(
             _paste_image(img, block, image, s)
     if text:
         draw_text(ImageDraw.Draw(img), text, s)
-    marks = [*page.inks, *page.shapes]
-    if highlights := [m for m in marks if m.tool == HIGHLIGHTER]:
+    marks = [*page.inks, *page.shapes, *(spill or [])]
+    # highlighter and pencil are see-through: multiplied in, so what's under them shows
+    if highlights := [m for m in marks if m.tool in (HIGHLIGHTER, PENCIL)]:
         # multiplied in, like a real highlighter: the PDF text under it stays legible
         layer = Image.new("RGB", canvas, "white")
         _draw(layer, highlights, s)
         img = ImageChops.multiply(img, layer)
-    _draw(img, [m for m in marks if m.tool != HIGHLIGHTER], s)
+    _draw(img, [m for m in marks if m.tool not in (HIGHLIGHTER, PENCIL)], s)
     return img.resize(size, Image.Resampling.LANCZOS)
+
+
+def _bounds(mark: Ink | Shape) -> tuple[float, float]:
+    """The mark's top and bottom on its page, in points."""
+    if isinstance(mark, Shape):
+        ys = [y for _, y in _outline(mark)]
+    else:
+        ys = [y for line, _ in _polylines(mark) for _, y in line]
+    return (min(ys), max(ys)) if ys else (0.0, 0.0)
+
+
+def spill_onto(pages: list[Page], number: int) -> list[Ink | Shape]:
+    """Ink and shapes of the pages before and after page `number` that run past their own page
+    onto it, moved into its space. The app's canvas is continuous: a line drawn past the
+    bottom of a page shows at the top of the next one (pages touch, with no gap)."""
+    out: list[Ink | Shape] = []
+    here = number - 1
+    for i in (here - 1, here + 1):
+        if not 0 <= i < len(pages):
+            continue
+        other = pages[i]
+        above = i < here
+        shift = -other.height if above else pages[here].height  # page i's top, in this space
+        for mark in [*other.inks, *other.shapes]:
+            top, bottom = _bounds(mark)
+            if (above and bottom > other.height) or (not above and top < 0):
+                ox, oy = mark.origin
+                out.append(replace(mark, origin=(ox, oy + shift)))
+    return out
 
 
 def _draw_paper(img: Image.Image, paper: Paper, s: float, pattern: bool = True) -> None:
@@ -136,7 +172,9 @@ def _draw(img: Image.Image, marks: list[Ink | Shape], s: float) -> None:
 
 def _color(rgba: tuple[int, int, int, int], tool: int) -> tuple[int, int, int]:
     r, g, b, a = rgba
-    if tool == HIGHLIGHTER:  # its translucency, as the color it gives on white paper
+    if tool == PENCIL:  # graphite: measured on the app's export, about 55% of its colour
+        a = PENCIL_ALPHA
+    if tool in (HIGHLIGHTER, PENCIL):  # its translucency, as the color it gives on white paper
         return (255 - (255 - r) * a // 255, 255 - (255 - g) * a // 255, 255 - (255 - b) * a // 255)
     return (r, g, b)
 
