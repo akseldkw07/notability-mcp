@@ -10,13 +10,46 @@ repos:
     hooks:
       - id: conventional-pre-commit
         stages: [commit-msg]
-  # fork only: `pre-commit install --hook-type post-merge` deploys main to Claude Desktop
+  # >>> mcp-utils shared hooks (precommit/fork-block.yaml; sync: scripts/sync-precommit.mjs) >>>
+# Shared hooks for forks whose upstream ships its own pre-commit config (e.g. notability-mcp).
+# scripts/sync-precommit.mjs appends this between markers at the end of the fork's `repos:`
+# list. Each hook here must match precommit/mcp.yaml exactly (test/precommit.test.ts checks).
   - repo: local
     hooks:
-      - id: deploy-desktop
-        name: Deploy to Claude Desktop (main only)
-        entry: bash -c '[ "$(git branch --show-current)" = main ] && uv run python scripts/deploy.py || true'
+      - id: prevent-main-push
+        name: Prevent direct push to main
+        # Scripts are referenced through the walters checkout ($WALT, falling back
+        # to ~/coding/awalters) rather than ./zsh_scripts, so this config works
+        # unchanged in other repos (projects_walt) and on other machines (spark).
+        entry: bash -c 'source "${WALT:-$HOME/coding/awalters}/zsh_scripts/prevent_main_push.zsh" && prevent_main_push'
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-push]
+      - id: mcp-tests
+        name: MCP repo tests
+        entry: bash -c '"${MCP_UTILS:-$HOME/coding/mcp/mcp-utils}/precommit/hooks/run-tests"'
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-push]
+      - id: mcp-post-merge
+        name: MCP deploy + Claude Desktop restart
+        entry: bash -c '"${MCP_UTILS:-$HOME/coding/mcp/mcp-utils}/precommit/hooks/post-merge"'
         language: system
         always_run: true
         pass_filenames: false
         stages: [post-merge]
+      - id: pyright
+        name: pyright type check
+        # walters checkout appended to PYTHONPATH (same rule as memo-alias-lint) so
+        # walt_utils imports resolve from other repos and from GUI commits that
+        # don't inherit the shell's PYTHONPATH.
+        entry: bash -c 'W="${WALT:-$HOME/coding/awalters}"; PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$W" "$W/zsh_scripts/pyright_check.zsh" "$@"' --
+        language: system
+        types: [python]
+        # pre-commit chunks large file lists into parallel invocations by default;
+        # concurrent `npx pyright` runs corrupt the shared npm cache (ENOTEMPTY/ENOENT).
+        require_serial: true
+        stages: [pre-commit]
+  # <<< mcp-utils shared hooks <<<
