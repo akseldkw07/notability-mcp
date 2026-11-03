@@ -5,8 +5,9 @@ tests/test_parity.py, which compare the two):
 
 - body text starts at the page's top and left margins (plus INDENT_STEP per indent level) and
   wraps at its right margin;
-- each line is LINE_PITCH x the font size tall; a page holds as many whole lines as fit
-  between its top and bottom margins, then the text continues on the next page;
+- each line is as tall as its largest font's line height (line_height); a page holds as many
+  whole lines as fit between its top and bottom margins, then the text continues on the next
+  page;
 - but on lined paper (or squared paper, when the note aligns text to lines), each line sits
   on one of the paper's lines (see rulings): those at least a font size below the top margin
   and above the bottom one;
@@ -22,9 +23,11 @@ from PIL import ImageDraw, ImageFont
 from notability_mcp.bundle import TEXT_BLOCK, Block, Note, Page, Run, Style
 
 GLYPH_SCALE = 1.0  # glyphs at the style's size
-LINE_PITCH = 1.7  # body text line height, in font sizes (23.8 pt at 14 pt)
-BOX_LINE_PITCH = 1.2  # text box line height, in font sizes (not yet measured)
-BASELINE = 0.64  # the baseline's depth in its line, as a fraction of the line height
+# Line height and the baseline's depth below the line's top, in font sizes, measured on the
+# app's exports; other fonts use their own metrics (ascent + descent + line gap, and ascent +
+# line gap). Helvetica Neue's line height is its own (1.193); Inter gets more room than its own.
+LINE_HEIGHT = {"Inter": 1.7}
+BASELINE_DEPTH = {"Inter": 1.071, "Helvetica Neue": 1.0}
 INDENT_STEP = 25.0  # points per paragraph indent level
 SNAP_RAISE = 0.12  # on lined paper, the baseline sits this many font sizes above the line
 TEXT_COLOR = (0, 0, 0, 255)
@@ -93,6 +96,23 @@ def text_width(text: str, font: Font) -> float:
     return _truetype(font, px).getlength(text) * font.size * GLYPH_SCALE / px
 
 
+def line_height(font: Font) -> float:
+    """A line of `font`'s height in points."""
+    if font.family in LINE_HEIGHT:
+        return LINE_HEIGHT[font.family] * font.size
+    metrics = _truetype(font, 1000).font
+    return metrics.height / 1000 * font.size  # pyright: ignore[reportAttributeAccessIssue]
+
+
+def baseline_depth(font: Font) -> float:
+    """How far below a line's top its baseline is, in points."""
+    if font.family in BASELINE_DEPTH:
+        return BASELINE_DEPTH[font.family] * font.size
+    metrics = _truetype(font, 1000).font
+    gap = metrics.height - metrics.ascent - metrics.descent  # pyright: ignore[reportAttributeAccessIssue]
+    return (metrics.ascent + gap) / 1000 * font.size  # pyright: ignore[reportAttributeAccessIssue]
+
+
 def _resolve(style: Style, default: tuple[str, float]) -> Font:
     return Font(style.family or default[0], style.size or default[1], style.bold, style.italic)
 
@@ -156,12 +176,10 @@ def _fit(word: str, font: Font, width: float) -> int:
     return n
 
 
-def _size(line: Line, paragraph: Paragraph, default: tuple[str, float]) -> float:
-    """The line's largest font size (an empty line: its paragraph's)."""
-    sizes = [font.size for _, _, font in line] or [
-        _resolve(style, default).size for _, style in paragraph
-    ]
-    return max(sizes, default=default[1])
+def _tallest(line: Line, paragraph: Paragraph, default: tuple[str, float]) -> Font:
+    """The line's tallest font (an empty line: its paragraph's)."""
+    fonts = [font for _, _, font in line] or [_resolve(style, default) for _, style in paragraph]
+    return max(fonts, key=line_height, default=_resolve(Style(), default))
 
 
 def _spans(line: Line, x: float, baseline: float, width: float, align: int) -> list[Span]:
@@ -190,7 +208,7 @@ def rulings(length: float, spacing: float) -> list[float]:
 
 class _Cursor:
     """Where the body text's next line goes on a page: on the paper's lines (see body_spans),
-    else one LINE_PITCH line after another."""
+    else one line height after another."""
 
     def __init__(self, note: Note, page: Page) -> None:
         self.page = page
@@ -212,14 +230,15 @@ class _Cursor:
     def width(self) -> float:
         return self.page.width - self.left - self.right
 
-    def next(self, size: float) -> float | None:
-        """The baseline for a line of `size` pt text, or None when the page is full."""
+    def next(self, font: Font) -> float | None:
+        """The baseline for a line whose tallest font is `font`, or None when the page is
+        full."""
         if self.slots is not None:
-            return self.slots.pop(0) - SNAP_RAISE * size if self.slots else None
-        height = LINE_PITCH * size
+            return self.slots.pop(0) - SNAP_RAISE * font.size if self.slots else None
+        height = line_height(font)
         if self.y + height > self.page.height - self.bottom and self.y > self.top:
             return None
-        baseline = self.y + height * BASELINE
+        baseline = self.y + baseline_depth(font)
         self.y += height
         return baseline
 
@@ -237,8 +256,8 @@ def body_spans(note: Note) -> dict[int, list[Span]]:
         indent = INDENT_STEP * style.indent
         width = cursor.width - indent
         for line in wrap(paragraph, note.font, width):
-            size = _size(line, paragraph, note.font)
-            while (baseline := cursor.next(size)) is None:
+            tallest = _tallest(line, paragraph, note.font)
+            while (baseline := cursor.next(tallest)) is None:
                 page = next(pages, None)
                 if page is None:
                     return out  # the app adds pages as text grows; the log has them all
@@ -262,10 +281,11 @@ def box_spans(block: Block, default: tuple[str, float]) -> list[Span]:
         style = paragraph[0][1]
         indent = INDENT_STEP * style.indent
         for line in wrap(paragraph, default, width - indent):
-            height = BOX_LINE_PITCH * _size(line, paragraph, default) * (sy or 1.0)
+            tallest = _tallest(line, paragraph, default)
             x = block.origin[0] + indent
-            out.extend(_spans(line, x, y + height * BASELINE, width - indent, style.align))
-            y += height
+            baseline = y + baseline_depth(tallest) * (sy or 1.0)
+            out.extend(_spans(line, x, baseline, width - indent, style.align))
+            y += line_height(tallest) * (sy or 1.0)
     return out
 
 

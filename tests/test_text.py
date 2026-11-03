@@ -6,7 +6,7 @@ from PIL import Image, ImageOps
 from notability_mcp import text
 from notability_mcp.bundle import TEXT_BLOCK, Block, Note, Page, Paper, Run, Style
 from notability_mcp.render import render_page
-from notability_mcp.text import LINE_PITCH, body_spans, page_spans, rulings, text_width, wrap
+from notability_mcp.text import body_spans, line_height, page_spans, rulings, text_width, wrap
 
 FONT = ("Helvetica Neue", 14.0)
 
@@ -35,14 +35,15 @@ def test_a_word_longer_than_the_line_is_broken():
 
 def test_body_text_starts_at_the_margins_and_flows_to_the_next_page():
     pages = [Page(1, (1, 1, 0), 612, 792), Page(2, (1, 1, 1), 612, 792)]
-    per_page = int((792 - 72) / (LINE_PITCH * 14))  # 30 lines of 23.8 pt
+    height = line_height(text.Font(*FONT))
+    per_page = int((792 - 72) / height)
     n = note("\n" * per_page + "next page", pages)
 
     spans = body_spans(n)
 
     assert list(spans) == [2]
     first = spans[2][0]  # one span per word
-    assert first.x == 36 and 36 < first.baseline < 36 + LINE_PITCH * 14
+    assert first.x == 36 and 36 < first.baseline < 36 + height
 
 
 def test_on_lined_paper_aligned_text_sits_on_the_lines():
@@ -78,7 +79,7 @@ def test_text_boxes_are_placed_on_their_page_and_drawn():
 
     spans = page_spans(n, page)
     span = spans[0]
-    assert span.x == 100 and 400 < span.baseline < 400 + 14 * text.BOX_LINE_PITCH
+    assert span.x == 100 and 400 < span.baseline < 400 + line_height(text.Font(*FONT))
 
     img = Image.open(io.BytesIO(render_page(page, 792, text=spans))).convert("RGB")
     left, top, right, bottom = ImageOps.invert(img.convert("L")).getbbox() or (0, 0, 0, 0)
